@@ -16,25 +16,6 @@ import (
 	bolt "github.com/coreos/bbolt"
 )
 
-/*
-func (fs *Filer) Close() error
-func New(name string) (bfs *Filer, err error)
-func (fs *Filer) EvalPath(btx *bolt.Tx, path string) (id uint64, err error)
-func (bfs *Filer) OpenFile(path string, flags int, mode os.FileMode) (file absfs.File, err error)
-func (filer *Filer) Remove(path string) error
-func (filer *Filer) RemoveAll(path string) error
-func (filer *Filer) Stat(path string) (os.FileInfo, error)
-func (filer *Filer) Mkdir(path string, perm os.FileMode) error
-func (fs *Filer) MkdirAll(path string, perm os.FileMode) error
-func (filer *Filer) Chmod(name string, mode os.FileMode) (err error)
-func (filer *Filer) Chtimes(name string, atime time.Time, mtime time.Time) (err error)
-func (filer *Filer) Chown(name string, uid, gid int) (err error)
-func b2i(d []byte) uint32
-func i2b(n uint32) []byte
-func b2i64(d []byte) uint64
-func i2b64(n uint64) []byte
-*/
-
 type Filer struct {
 	db     *bolt.DB
 	rootId uint64
