@@ -470,13 +470,41 @@ func TestBoltFS(t *testing.T) {
 		}
 	})
 
-	// cleanup
-	err = boltfs.Close()
+	enable = true
+	// test remove
+	err = fs.Remove("/truncate_file.tmp")
 	if err != nil {
 		t.Error(err)
 	}
 
+	f, err := fs.Open("/")
+	if err != nil {
+		t.Error(err)
+	}
+
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		t.Error(err)
+	}
+	f.Close()
+	for _, name := range names {
+		if name == "truncate_file.tmp" {
+			t.Errorf("file not removed. %q, %q", name, "truncate_file.tmp")
+		}
+	}
+
+	err = fs.RemoveAll("/")
+	if err != nil {
+		t.Error(err)
+	}
+
+	// cleanup
 	err = os.RemoveAll(dbpath)
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = boltfs.Close()
 	if err != nil {
 		t.Error(err)
 	}

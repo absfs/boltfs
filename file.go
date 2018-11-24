@@ -32,10 +32,8 @@ func (f *File) Name() string {
 // Read reads up to len(b) bytes from the File. It returns the number of bytes
 // read and any error encountered. At end of file, Read returns 0, io.EOF.
 func (f *File) Read(p []byte) (int, error) {
-	// if f == nil {
-	// 	panic("nil file handle")
-	// }
-	if f.flags == 3712 {
+
+	if f.flags == 3712 { // 07200
 		return 0, io.EOF
 	}
 	if f.flags&absfs.O_ACCESS == os.O_WRONLY {
@@ -44,25 +42,20 @@ func (f *File) Read(p []byte) (int, error) {
 	if f.node.IsDir() && f.node.Size == 0 {
 		return 0, &os.PathError{Op: "read", Path: f.name, Err: syscall.EISDIR} //os.ErrPermission
 	}
-	if f.offset >= f.node.Size {
-		return 0, io.EOF
-	}
+	offset := int(f.offset)
 
 	data, err := f.fs.loadData(f.node.Ino)
 	if err != nil {
 		return 0, err
 	}
+
+	// TODO: validate info.Size()
+	if offset >= len(data) {
+		return 0, io.EOF
+	}
+
 	n := copy(p, data[f.offset:])
 	f.offset += int64(n)
-	// err := f.db.View(func(tx *bolt.Tx) error {
-	// 	b := tx.Bucket([]byte("data"))
-	// 	data := b.Get(i2b(f.node.Ino))
-	// 	if data == nil {
-	// 		return os.ErrNotExist
-	// 	}
-	// 	n = copy(p, data[f.offset:])
-	// 	return nil
-	// })
 
 	if err != nil {
 		return n, err
@@ -103,26 +96,6 @@ func (f *File) Write(p []byte) (int, error) {
 	n := copy(data[int(f.offset):], p)
 	f.offset += int64(n)
 	f.node.Size = int64(len(data))
-	/*
-		err := f.db.View(func(tx *bolt.Tx) error {
-
-			// get from data bucket
-			d := tx.Bucket([]byte("data")).Get(i2b(f.node.Ino))
-			if d == nil {
-				return nil
-			}
-			// if the saved data is longer then size / len(data) then create the larger
-			// allocation
-			if len(d) > len(data) {
-				data = make([]byte, len(d))
-			}
-			copy(data, d)
-			return nil
-		})
-		if err != nil {
-			return  err
-		}
-	*/
 
 	ino, err := f.fs.saveInode(f.node)
 	if err != nil {
@@ -335,231 +308,3 @@ func (i *fileinfo) Sys() interface{} {
 func (i *fileinfo) IsDir() bool {
 	return i.node.IsDir()
 }
-
-// type File struct {
-// 	db        *bolt.DB
-// 	name      string
-// 	flags     int
-// 	id        uint64
-// 	node      *inode.Inode
-// 	dirs      Directory
-// 	data      []byte
-// 	diroffset int
-// 	offset    int64
-// 	fileId    c4.ID
-// }
-
-// func (f *File) Name() string {
-// 	return f.name
-// }
-
-// func (f *File) Read(b []byte) (n int, err error) {
-
-// 	if int(f.flags&O_ACCESS) == os.O_WRONLY {
-// 		return 0, os.ErrPermission
-// 	}
-// 	if f.offset >= int64(len(f.data)) {
-// 		return 0, io.EOF
-// 	}
-// 	n = copy(b, f.data[f.offset:])
-
-// 	f.offset += int64(n)
-// 	return n, nil
-// }
-
-// func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
-// 	_, err = f.Seek(off, io.SeekStart)
-// 	if err != nil {
-// 		return 0, err
-// 	}
-
-// 	return f.Read(b)
-// }
-
-// func (f *File) Write(p []byte) (n int, err error) {
-// 	if int(f.flags&O_ACCESS) == os.O_RDONLY {
-// 		return 0, os.ErrPermission
-// 	}
-// 	f.node.SetAccess(time.Time{})
-// 	f.node.SetModified(time.Time{})
-
-// 	// if f.offset != int64(len(f.data)) {
-// 	// 	f.e.Reset()
-// 	// 	_, err = io.Copy(f.e, bytes.NewReader(f.data[:int(f.offset)]))
-// 	// 	if err != nil {
-// 	// 		return 0, err
-// 	// 	}
-// 	// }
-
-// 	// _, err = io.Copy(f.e, bytes.NewReader(p))
-// 	// if err != nil {
-// 	// 	return 0, err
-// 	// }
-
-// 	if int64(len(f.data)) < f.offset+int64(len(p)) {
-// 		data := make([]byte, int(f.offset+int64(len(p))))
-// 		copy(data, f.data[:int(f.offset)])
-// 		f.data = data
-// 	}
-
-// 	n = copy(f.data[int(f.offset):], p)
-// 	f.offset += int64(n)
-// 	f.node.Size = int64(len(f.data))
-// 	f.fileId = c4.Identify(bytes.NewReader(f.data))
-// 	return n, nil
-// }
-
-// func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
-// 	_, err = f.Seek(off, io.SeekStart)
-// 	if err != nil {
-// 		return 0, err
-// 	}
-
-// 	return f.Write(b)
-// }
-
-// func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
-// 	switch whence {
-// 	case io.SeekStart:
-// 		f.offset = offset
-// 	case io.SeekCurrent:
-// 		f.offset += offset
-// 	case io.SeekEnd:
-// 		f.offset = int64(len(f.data)) + offset
-// 	}
-// 	if f.offset < 0 {
-// 		f.offset = 0
-// 	}
-// 	return f.offset, nil
-// }
-
-// func (f *File) Stat() (os.FileInfo, error) {
-// 	return &FileInfo{f.name, f.node}, nil
-// }
-
-// func (f *File) Sync() error {
-// 	return ErrNotImplemented
-// }
-
-// func (f *File) Readdir(n int) (list []os.FileInfo, err error) {
-
-// 	if f.dirs == nil {
-// 		err = f.db.View(func(btx *bolt.Tx) error {
-// 			tx := NewTx(btx)
-// 			f.dirs = tx.GetDirs(f.id)
-// 			return nil
-// 		})
-// 		if err != nil {
-// 			return nil, err
-// 		}
-// 		if f.dirs == nil {
-// 			f.dirs = Dir{}
-// 		}
-// 	}
-
-// 	if len(f.dirs) == 0 {
-// 		return nil, io.EOF
-// 	}
-
-// 	if n < 1 || n > len(f.dirs) {
-// 		n = len(f.dirs)
-// 	}
-// 	var infos []os.FileInfo
-
-// 	err = f.db.View(func(btx *bolt.Tx) error {
-// 		tx := NewTx(btx)
-// 		for _, entry := range f.dirs[:n] {
-// 			if entry.Id == 0 {
-// 				continue
-// 			}
-// 			node := tx.GetInode(entry.Id)
-// 			if node == nil {
-// 				continue
-// 			}
-// 			infos = append(infos, &FileInfo{entry.Name, node})
-// 		}
-
-// 		return nil
-// 	})
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return infos, nil
-// }
-
-// func (f *File) Close() error {
-// 	if int(f.flags&O_ACCESS) == os.O_RDONLY {
-// 		return nil
-// 	}
-
-// 	f.node.SetID(f.fileId)
-
-// 	return f.db.Update(func(btx *bolt.Tx) error {
-// 		tx := NewTx(btx)
-// 		err := tx.WriteData(f.node.Id, f.data)
-// 		if err != nil {
-// 			return err
-// 		}
-
-// 		if f.id == 0 {
-// 			f.id = tx.PutInode(f.node)
-// 		} else {
-// 			tx.SetInode(f.id, f.node)
-// 		}
-// 		return nil
-// 	})
-
-// 	return nil
-// }
-
-// func (f *File) Readdirnames(n int) (list []string, err error) {
-// 	var infos []os.FileInfo
-// 	infos, err = f.Readdir(n)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	list = make([]string, len(infos))
-// 	for i := range infos {
-// 		list[i] = infos[i].Name()
-// 	}
-
-// 	return list, nil
-// }
-
-// func (f *File) Truncate(size int64) error {
-// 	f.data = f.data[:int(size)]
-// 	return nil
-// }
-
-// func (f *File) WriteString(s string) (int, error) {
-// 	return f.Write([]byte(s))
-// }
-
-// type FileInfo struct {
-// 	name string
-// 	node *Inode
-// }
-
-// func (f *FileInfo) Name() string {
-// 	return f.name
-// }
-
-// func (f *FileInfo) Mode() os.FileMode {
-// 	return f.node.Mode
-// }
-
-// func (f *FileInfo) IsDir() bool {
-// 	return f.Mode()&os.ModeDir != 0
-// }
-
-// func (f *FileInfo) ModTime() time.Time {
-// 	return f.node.Mtime
-// }
-
-// func (f *FileInfo) Size() int64 {
-// 	return f.node.Size
-// }
-
-// func (f *FileInfo) Sys() interface{} {
-// 	return f.node
-// }

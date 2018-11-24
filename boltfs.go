@@ -188,20 +188,10 @@ func (fs *FileSystem) SetTempdir(tempdir string) {
 	})
 }
 
-// createBuckets simply loops over the buckets provided and creates buckets of that name in the database
-func createBuckets(tx *bolt.Tx, buckets []string) error {
-	// initialize buckets
-	for _, name := range buckets {
-		_, err := tx.CreateBucketIfNotExists([]byte(name))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// saveInode save an iNode to the databased.  If the iNode's ino number is non-zero the node will be saved with the ino number provided.
-// If the Ino value is zero (the nil value) then a new ino is created. In both cases the ino value is returned.
+// saveInode save an iNode to the databased.  If the iNode's ino number is
+// non-zero the node will be saved with the ino number provided.
+// If the Ino value is zero (the nil value) then a new ino is created. In both
+// cases the ino value is returned.
 func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 	ino = node.Ino
 	err = fs.db.Update(func(tx *bolt.Tx) error {
@@ -220,46 +210,6 @@ func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 		return encodeNode(b, ino, node)
 	})
 	return ino, err
-}
-
-// saveInodes is a multi node version of saveInode. saveInodes attempts to create every inode before returnning the first error if any
-func (fs *FileSystem) saveInodes(nodes ...*iNode) error {
-	if len(nodes) == 0 {
-		return nil
-	}
-
-	return fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("inodes"))
-
-		for _, node := range nodes {
-			ino := node.Ino
-			var err error
-
-			if ino == 0 {
-				ino, err = b.NextSequence()
-				if err != nil {
-					ino = 0
-					return err
-				}
-				if ino == 0 {
-					encodeNode(b, 0, new(iNode))
-					ino, err = b.NextSequence()
-					if err != nil {
-						ino = 0
-						return err
-					}
-				}
-				node.Ino = ino
-			}
-
-			err = encodeNode(b, ino, node)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-
-	})
 }
 
 // loadInode loads the iNode defined by ino, or an errors
@@ -496,25 +446,6 @@ func (fs *FileSystem) Create(name string) (absfs.File, error) {
 	return fs.OpenFile(name, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0777)
 }
 
-// popPath removes first (or top) directory from the path provided and returns
-// the name and the reamining portion of the path with any leading slashes removed.
-func popPath(path string) (string, string) {
-	if path == "" {
-		return "", "" // 1
-	}
-	if path == "/" {
-		return "/", "" // 2
-	}
-
-	x := strings.Index(path, "/")
-	if x == -1 {
-		return path, "" // 6
-	} else if x == 0 {
-		return "/", strings.TrimLeft(path, "/") // 3
-	}
-	return path[:x], strings.TrimLeft(path[x:], "/")
-}
-
 // resolve resolves the path provided into a iNode, or an error
 func (fs *FileSystem) resolve(path string) (*iNode, error) {
 	node := new(iNode)
@@ -593,26 +524,6 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 			pathErr.Err = err
 			return file, pathErr
 		}
-
-		// child = newInode(perm &^ os.ModeType)
-		// child.countUp()
-		// ino, err := fs.saveInode(child)
-		// if err != nil {
-		// 	pathErr.Err = err
-		// 	return file, pathErr
-		// }
-
-		// _, err = parent.Link(filename, ino)
-		// if err != nil {
-		// 	pathErr.Err = err
-		// 	return file, pathErr
-		// }
-
-		// _, err = fs.saveInode(parent)
-		// if err != nil {
-		// 	pathErr.Err = err
-		// 	return file, pathErr
-		// }
 	} else { // child exists
 		if flag&os.O_CREATE != 0 && flag&os.O_EXCL != 0 {
 			pathErr.Err = syscall.EEXIST
@@ -707,36 +618,48 @@ func (fs *FileSystem) Truncate(name string, size int64) error {
 
 }
 
+var enable bool
+
 //
 func (fs *FileSystem) loadParentChild(dir, filename string) (*iNode, *iNode) {
+	filename = strings.Trim(filename, "/")
+
 	if dir == "/" && filename == "" {
+
 		node, err := fs.loadInode(fs.rootIno)
 		if err != nil {
 			return nil, nil
 		}
 		return node, nil
 	}
+
 	parent, err := fs.resolve(dir)
 	if err != nil {
 		return nil, nil
 	}
 
-	ino, err := findChild(parent, filename)
-	if err != nil {
-		return parent, nil
+	if !sort.IsSorted(parent.Children) {
+		sort.Sort(parent.Children)
 	}
-	child := new(iNode)
 
-	err = fs.db.View(func(tx *bolt.Tx) error {
-		return decodeNode(tx.Bucket([]byte("inodes")), ino, child)
+	i := sort.Search(len(parent.Children), func(i int) bool {
+		return parent.Children[i].Name >= filename
 	})
-	if err != nil {
-		return parent, nil
+	if i < len(parent.Children) && parent.Children[i].Name == filename {
+		// found
+		child, err := fs.loadInode(parent.Children[i].Ino)
+		if err != nil {
+			return parent, nil
+		}
+		return parent, child
 	}
-	return parent, child
+
+	// not found
+	return parent, nil
 }
 
 func (fs *FileSystem) saveParentChild(parent *iNode, filename string, child *iNode) error {
+	filename = strings.Trim(filename, "/")
 	// TODO: turn these into manual transactions
 	child.countUp()
 	ino, err := fs.saveInode(child)
@@ -825,6 +748,12 @@ func (fs *FileSystem) MkdirAll(name string, perm os.FileMode) error {
 
 // Remove removes the named file or (empty) directory. If there is an error, it will be of type *PathError.
 func (fs *FileSystem) Remove(name string) error {
+
+	// cannot remove the root
+	if name == "/" {
+		return nil
+	}
+
 	pathErr := &os.PathError{Op: "remove", Path: name}
 	dir, filename := fs.cleanPath(name)
 	parent, child := fs.loadParentChild(dir, name)
@@ -915,15 +844,18 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 // RemoveAll removes path and any children it contains. It removes everything it can but
 // returns the first error it encounters. If the path does not exist, RemoveAll returns nil (no error).
 func (fs *FileSystem) RemoveAll(name string) error {
-	pathErr := &os.PathError{Op: "remove", Path: name}
+
 	dir, filename := fs.cleanPath(name)
 	parent, child := fs.loadParentChild(dir, filename)
-	if child == nil {
-		pathErr.Err = os.ErrNotExist
-		return pathErr
-	}
+	_, _ = parent, child
 	var inos []uint64
-	err := fs.Walk(name, func(path string, info os.FileInfo, err error) error {
+
+	var rootid uint64
+	if dir == "/" {
+		rootid = parent.Ino
+	}
+
+	err := fs.Walk(filepath.Join(dir, filename), func(path string, info os.FileInfo, err error) error {
 		node, ok := info.Sys().(*iNode)
 		if !ok {
 			return errors.New("unable to cast os.FileInfo to *iNode")
@@ -935,11 +867,18 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		return err
 	}
 
+	for i, j := 0, len(inos)-1; i < len(inos)/2; i, j = i+1, j-1 {
+		inos[i], inos[j] = inos[j], inos[i]
+	}
+
 	err = fs.db.Update(func(tx *bolt.Tx) error {
 		nodeB := tx.Bucket([]byte("inodes"))
 		dataB := tx.Bucket([]byte("data"))
 
 		for _, ino := range inos {
+			if rootid != 0 && ino == rootid {
+				continue
+			}
 			key := i2b(ino)
 			err := nodeB.Delete(key)
 			if err != nil {
@@ -956,24 +895,15 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		return err
 	}
 
-	_, err = parent.Unlink(filename)
-	if err != nil {
-		return err
-	}
-	if child != nil {
-		if child.countDown() == 0 {
-			fs.deleteInode(child.Ino)
-		} else {
-			_, err = fs.saveInode(child)
-			if err != nil {
-				return err
-			}
-		}
+	if child == nil {
+		parent.Children = parent.Children[:0]
+		fs.saveInode(parent)
+	} else {
+		child.Children = child.Children[:0]
+		fs.saveInode(child)
 	}
 
-	_, err = fs.saveInode(parent)
-
-	return err
+	return nil
 }
 
 //Chtimes changes the access and modification times of the named file
