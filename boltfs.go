@@ -596,6 +596,7 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 
 // Stat returns the FileInfo structure describing file. If there is an error, it will be of type *os.PathError.
 func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
+
 	dir, filename := fs.cleanPath(name)
 	node, err := fs.resolve(filepath.Join(dir, filename))
 	if err != nil {
@@ -603,6 +604,9 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 	}
 
 	if node.Mode&os.ModeSymlink == 0 {
+		if filename == "" {
+			filename = dir
+		}
 		return inodeinfo{filename, node}, nil
 	}
 
@@ -966,17 +970,36 @@ func (fs *FileSystem) Chtimes(name string, atime time.Time, mtime time.Time) err
 
 //Chown changes the owner and group ids of the named file
 func (fs *FileSystem) Chown(name string, uid, gid int) error {
+	pathErr := &os.PathError{Op: "chown", Path: name}
+
 	dir, filename := fs.cleanPath(name)
 	_, node := fs.loadParentChild(dir, filename)
 	if node == nil {
-		return os.ErrNotExist
+		pathErr.Err = os.ErrNotExist
+		return pathErr
+	}
+	if node.Mode&os.ModeSymlink == 0 {
+		node.Uid = uint32(uid)
+		node.Gid = uint32(gid)
+
+		_, err := fs.saveInode(node)
+		if err != nil {
+			pathErr.Err = nil
+			return pathErr
+		}
+		return nil
 	}
 
-	node.Uid = uint32(uid)
-	node.Gid = uint32(gid)
+	link, err := fs.loadSymlink(node.Ino)
+	if err != nil {
+		pathErr.Err = nil
+		return pathErr
+	}
+	if !filepath.IsAbs(link) {
+		link = filepath.Join(name, link)
+	}
 
-	_, err := fs.saveInode(node)
-	return err
+	return fs.Chown(link, uid, gid)
 }
 
 //Chmod changes the mode of the named file to mode.
@@ -1005,7 +1028,9 @@ func (fs *FileSystem) Lstat(name string) (os.FileInfo, error) {
 		pathErr.Err = err
 		return nil, pathErr
 	}
-
+	if filename == "" {
+		filename = dir
+	}
 	return inodeinfo{filename, node}, nil
 }
 
@@ -1016,8 +1041,21 @@ func (fs *FileSystem) Lstat(name string) (os.FileInfo, error) {
 // On Windows, it always returns the syscall.EWINDOWS error, wrapped in *PathError.
 func (fs *FileSystem) Lchown(name string, uid, gid int) error {
 	pathErr := &os.PathError{Op: "lchown", Path: name}
-	pathErr.Err = absfs.ErrNotImplemented
-	return pathErr
+	dir, filename := fs.cleanPath(name)
+	_, node := fs.loadParentChild(dir, filename)
+	if node == nil {
+		pathErr.Err = os.ErrNotExist
+		return pathErr
+	}
+	node.Uid = uint32(uid)
+	node.Gid = uint32(gid)
+
+	_, err := fs.saveInode(node)
+	if err != nil {
+		pathErr.Err = err
+		return pathErr
+	}
+	return nil
 }
 
 // Readlink returns the destination of the named symbolic link. If there is an

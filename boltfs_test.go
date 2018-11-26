@@ -530,97 +530,137 @@ func TestSymlinks(t *testing.T) {
 	var fs absfs.SymlinkFileSystem
 	fs = boltfs
 
-	testdata := [][]string{
+	type Test struct {
+		Label    string
+		Path     string
+		Readlink string
+		Error    string
+	}
 
-		// abs path
-		{"/foo/bar/baz/", "/foo/baz"}, // /foo/bar/baz -> /foo/baz
-		{"/foo/baz/"},                 // /foo/baz
-
-		// rel path
-		{"/foo/bar/bat/", "../../bat"}, // /foo/bar/baz -> /foo/baz
-		{"/foo/bat/"},
-
-		// same dir
-		{"/bat/", "/foo"}, // /bat -> /foo
-
-		// broken
-		{"/broken/", "/nil"}, // /broken ->
-
-		// circular absolute
-		{"/circular/one/two/three/", "/circular/one"}, // /broken -> /nil
-
-		// circular relative
-		{"/circular/one/two/four/", "../../"}, // /broken -> /nil
-
+	testdata := []Test{
+		{
+			Label:    "abs path",
+			Path:     "/foo/bar/baz",
+			Readlink: "/foo/baz",
+			Error:    "",
+		},
+		{
+			Label:    "rel path",
+			Path:     "/foo/bar/bat",
+			Readlink: "../../bat",
+			Error:    "",
+		},
+		{
+			Label:    "same dir",
+			Path:     "/bat",
+			Readlink: "/foo",
+			Error:    "",
+		},
+		{
+			Label:    "broken",
+			Path:     "/broken",
+			Readlink: "/nil",
+			Error:    "file does not exist",
+		},
+		{
+			Label:    "circular absolute",
+			Path:     "/circular/one/two/three",
+			Readlink: "/circular/one",
+			Error:    "",
+		},
+		{
+			Label:    "circular relative",
+			Path:     "/circular/one/two/four",
+			Readlink: "../..",
+			Error:    "",
+		},
 	}
 
 	t.Run("symlinks", func(t *testing.T) {
-		for _, pathset := range testdata {
-			dir := filepath.Clean(pathset[0])
-			if len(pathset) > 1 {
-				fs.MkdirAll(filepath.Clean(pathset[1]), 0700)
-				dir = filepath.Dir(dir)
-			}
-			err := fs.MkdirAll(dir, 0700)
-			if err != nil {
-				t.Logf("%s (error: %v)\n", dir, err)
-				t.Error(err)
-			}
-		}
-		for _, pathset := range testdata {
-			if len(pathset) != 2 {
-				continue
-			}
-			source := filepath.Clean(pathset[1])
-			link := filepath.Clean(pathset[0])
+		//Path to test map to make testing a little easier
+		linkmap := make(map[string]Test)
 
-			// t.Logf("Symlink %q %q\n", source, link)
-			err := boltfs.Symlink(source, link)
-			if err != nil {
-				t.Log(err)
+		// build directory structure, with all symlink targets
+		for _, test := range testdata {
+			linkmap[test.Path] = test
+
+			// folders in which files will be created
+			fs.MkdirAll(filepath.Dir(test.Path), 0700)
+
+			link := test.Readlink
+			if !filepath.IsAbs(test.Readlink) {
+				link = filepath.Join(test.Path, test.Readlink)
 			}
+
+			// folders that symlinks will link to
+			fs.MkdirAll(link, 0700)
+
 		}
 
+		// make symlinks
+		for _, test := range testdata {
+
+			// The result of "fs.Readlink" is esssentally the same as the `source`
+			// value in a copy, so `test.Readlink` is the 'source', and
+			// `test.Path` is a symbolic link to it (a.k.a the 'target')
+			err := boltfs.Symlink(test.Readlink, test.Path)
+			if err != nil {
+				t.Fatalf("should not error: %s", err)
+			}
+		}
+
+		// remove the broken link target to break the link
 		err := fs.Remove("/nil")
 		if err != nil {
 			t.Error(err)
 		}
 
-		i := 0
+		// `count` and `limit` are to prevent infinite walks if implementation fails
+		// to stop on symlinks as defined by `filepath.Walk`.
+		var count, limit int
+		limit = 100
+
 		err = boltfs.Walk("/", func(path string, info os.FileInfo, err error) error {
+			t.Log(path)
 			link := ""
 			if info.Mode()&os.ModeSymlink != 0 {
 				link, err = fs.Readlink(path)
 				if err != nil {
 					return err
 				}
-				link = "-> " + link
+			}
+			if linkmap[path].Readlink != link {
+				t.Errorf("expected symlink %q -> %q", path, linkmap[path])
 			}
 
-			// t.Logf("%s %s %s\n", info.Mode(), path, link)
 			stat, err := fs.Stat(path)
-			if err != nil {
-				// t.Logf("fs.Stat err=%s", err)
-			}
-			if stat != nil {
-				// t.Logf("Stat: %s %q %s", stat.Mode(), stat.Name(), link)
+			if len(linkmap[path].Error) == 0 {
+				if err != nil {
+					t.Errorf("unexpected error %s", err)
+				}
 			} else {
-				// t.Logf("Stat: <nil>")
+				if err == nil {
+					t.Errorf("expected error missing %s", linkmap[path].Error)
+				}
+			}
+
+			if stat != nil {
+				t.Logf(" Stat: %s %q %s", stat.Mode(), stat.Name(), link)
+			} else {
+				t.Logf("Stat: <nil>")
 			}
 
 			lstat, err := fs.Lstat(path)
 			if err != nil {
 				t.Errorf("fs.Lstat error=%s", err)
 			}
-			_ = lstat
-			// if lstat != nil {
-			// 	t.Logf("Lstat: %s %q %s\n", lstat.Mode(), lstat.Name(), link)
-			// } else {
-			// 	t.Logf("Lstat: <nil>\n")
-			// }
-			// fmt.Printf("Lstat: %s %q %s\n\n", lstat.Mode(), lstat.Name(), link)
-			i++
-			if i > 100 {
+			if lstat != nil {
+				t.Logf("Lstat: %s %q %s\n", lstat.Mode(), lstat.Name(), link)
+			} else {
+				t.Logf("Lstat: <nil>\n")
+			}
+			count++
+			if count > limit {
 				return errors.New("too deep")
 			}
 			return nil
@@ -646,10 +686,3 @@ func TestSymlinks(t *testing.T) {
 	}
 
 }
-
-// func (fs *FileSystem) Symlink(oldname, newname string) error
-// func (fs *FileSystem) Readlink(name string) (string, error)
-// func (fs *FileSystem) Lstat(name string) (os.FileInfo, error)
-// func (fs *FileSystem) Lchown(name string, uid, gid int) error
-
-// func (fs *FileSystem) FastWalk(name string, fn func(string, os.FileMode) error) error
