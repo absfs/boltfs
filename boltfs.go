@@ -16,7 +16,7 @@ import (
 	"github.com/absfs/absfs"
 )
 
-// O_ACCESS iss a mask for os.FileMode to get the access type,  os.O_RDONLY, os.O_WRONLY and os.O_RDWR
+// O_ACCESS is a mask for os.FileMode to get the access type,  os.O_RDONLY, os.O_WRONLY and os.O_RDWR
 const O_ACCESS = 0x3
 
 var errNotDir = errors.New("not a directory")
@@ -212,6 +212,38 @@ func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 	return ino, err
 }
 
+var errInvalidIno = errors.New("invalid ino")
+
+// saveSymlink saves a path to the Ino provided
+func (fs *FileSystem) saveSymlink(ino uint64, path string) error {
+	if ino == 0 {
+		return errInvalidIno
+	}
+	return fs.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("symlinks")).Put(i2b(ino), []byte(path))
+	})
+}
+
+// saveSymlink saves a path to the Ino provided
+func (fs *FileSystem) loadSymlink(ino uint64) (string, error) {
+	if ino == 0 {
+		return "", errInvalidIno
+	}
+	var path string
+	err := fs.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket([]byte("symlinks")).Get(i2b(ino))
+		if data == nil {
+			return os.ErrNotExist
+		}
+		path = string(data)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // loadInode loads the iNode defined by ino, or an errors
 func (fs *FileSystem) loadInode(ino uint64) (*iNode, error) {
 	if ino == 0 {
@@ -400,15 +432,15 @@ func (fs *FileSystem) Copy(source, destination string) error {
 		return pathErr
 	}
 
-	_, err = srcParent.Unlink(srcFilename)
-	if err != nil {
-		pathErr.Err = err
-		return pathErr
-	}
+	// _, err = srcParent.Unlink(srcFilename)
+	// if err != nil {
+	// 	pathErr.Err = err
+	// 	return pathErr
+	// }
 
-	if dstChild != nil {
-		dstChild.countDown()
-	}
+	// if dstChild != nil {
+	// 	dstChild.countDown()
+	// }
 	_, err = fs.saveInode(srcParent)
 	if err != nil {
 		pathErr.Err = err
@@ -570,7 +602,20 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 		return nil, err
 	}
 
-	return inodeinfo{filename, node}, nil
+	if node.Mode&os.ModeSymlink == 0 {
+		return inodeinfo{filename, node}, nil
+	}
+
+	link, err := fs.loadSymlink(node.Ino)
+	if err != nil {
+		return nil, err
+	}
+
+	if !filepath.IsAbs(link) {
+		link = filepath.Join(name, link)
+	}
+
+	return fs.Stat(link)
 }
 
 // Truncate changes the size of the file. It does not change the I/O offset. If
@@ -618,9 +663,8 @@ func (fs *FileSystem) Truncate(name string, size int64) error {
 
 }
 
-var enable bool
-
-//
+// loadParentChild loads the node for `dir` and the child nodes with name
+// `filename` or nil.
 func (fs *FileSystem) loadParentChild(dir, filename string) (*iNode, *iNode) {
 	filename = strings.Trim(filename, "/")
 
@@ -660,7 +704,6 @@ func (fs *FileSystem) loadParentChild(dir, filename string) (*iNode, *iNode) {
 
 func (fs *FileSystem) saveParentChild(parent *iNode, filename string, child *iNode) error {
 	filename = strings.Trim(filename, "/")
-	// TODO: turn these into manual transactions
 	child.countUp()
 	ino, err := fs.saveInode(child)
 	if err != nil {
@@ -948,4 +991,91 @@ func (fs *FileSystem) Chmod(name string, mode os.FileMode) error {
 
 	_, err := fs.saveInode(node)
 	return err
+}
+
+// Lstat returns a FileInfo describing the named file. If the file is a symbolic
+// link, the returned FileInfo describes the symbolic link. Lstat makes no
+// attempt to follow the link. If there is an error, it will be of type
+// *PathError.
+func (fs *FileSystem) Lstat(name string) (os.FileInfo, error) {
+	pathErr := &os.PathError{Op: "lstat", Path: name}
+	dir, filename := fs.cleanPath(name)
+	node, err := fs.resolve(filepath.Join(dir, filename))
+	if err != nil {
+		pathErr.Err = err
+		return nil, pathErr
+	}
+
+	return inodeinfo{filename, node}, nil
+}
+
+// Lchown changes the numeric uid and gid of the named file. If the file is a
+// symbolic link, it changes the uid and gid of the link itself. If there is an
+// error, it will be of type *PathError.
+//
+// On Windows, it always returns the syscall.EWINDOWS error, wrapped in *PathError.
+func (fs *FileSystem) Lchown(name string, uid, gid int) error {
+	pathErr := &os.PathError{Op: "lchown", Path: name}
+	pathErr.Err = absfs.ErrNotImplemented
+	return pathErr
+}
+
+// Readlink returns the destination of the named symbolic link. If there is an
+// error, it will be of type *PathError.
+func (fs *FileSystem) Readlink(name string) (string, error) {
+	node, err := fs.resolve(name)
+	if err != nil {
+		return "", err
+	}
+
+	path, err := fs.loadSymlink(node.Ino)
+	if err != nil {
+		return "", err
+	}
+
+	return path, nil
+}
+
+// Symlink creates newname as a symbolic link to oldname. If there is an error,
+// it will be of type *LinkError.
+func (fs *FileSystem) Symlink(source, destination string) error {
+	pathErr := &os.PathError{Op: "symlink", Path: destination}
+
+	dstDir, dstFilename := fs.cleanPath(destination)
+	dstParent, dstChild := fs.loadParentChild(dstDir, dstFilename)
+
+	if dstChild != nil {
+		pathErr.Err = os.ErrExist
+		pathErr.Path = destination
+		return pathErr
+	}
+
+	node := newInode(os.ModeSymlink | (fs.Umask() &^ os.ModeType))
+
+	ino, err := fs.saveInode(node)
+	if err != nil {
+		pathErr.Err = err
+		pathErr.Path = destination
+		return pathErr
+	}
+
+	err = fs.saveSymlink(ino, source)
+	if err != nil {
+		pathErr.Err = err
+		return pathErr
+	}
+	// fmt.Printf("%d: %s -> %s\n", ino, destination, source)
+	_, err = dstParent.Link(dstFilename, ino)
+	if err != nil {
+		pathErr.Err = err
+		return pathErr
+	}
+	ino, err = fs.saveInode(dstParent)
+	if err != nil {
+		pathErr.Err = err
+		pathErr.Path = destination
+		return pathErr
+	}
+
+	return nil
 }

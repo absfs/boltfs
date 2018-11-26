@@ -1,8 +1,10 @@
 package boltfs
 
 import (
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -444,6 +446,7 @@ func TestBoltFS(t *testing.T) {
 		"/foo",
 		"/foo/bar",
 		"/foo/bar/baz",
+		"/foo/bar/baz/test_file.txt",
 		"/foo/test_file.txt",
 		"/truncate_file.tmp",
 	}
@@ -453,12 +456,13 @@ func TestBoltFS(t *testing.T) {
 			if err != nil {
 				return err
 			}
-
-			if walkpaths[i] != path {
-				t.Errorf("wrong path: %s, %s", walkpaths[i], path)
+			if i < len(walkpaths) {
+				if walkpaths[i] != path {
+					t.Errorf("wrong path: %s, %s", walkpaths[i], path)
+				}
 			}
 			i++
-			// fmt.Printf("%s\n", path)
+			t.Logf("%s\n", path)
 			return nil
 		})
 		if err != nil {
@@ -470,7 +474,6 @@ func TestBoltFS(t *testing.T) {
 		}
 	})
 
-	enable = true
 	// test remove
 	err = fs.Remove("/truncate_file.tmp")
 	if err != nil {
@@ -498,8 +501,136 @@ func TestBoltFS(t *testing.T) {
 		t.Error(err)
 	}
 
+	err = boltfs.Close()
+	if err != nil {
+		t.Error(err)
+	}
 	// cleanup
 	err = os.RemoveAll(dbpath)
+	if err != nil {
+		t.Error(err)
+	}
+
+}
+
+func TestSymlinks(t *testing.T) {
+	dbpath := "testingSymlinks.db"
+
+	// remove any previous test state
+	os.RemoveAll(dbpath)
+
+	// setup
+	boltfs, err := NewFS(dbpath)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// test interface compatibility
+	var fs absfs.SymlinkFileSystem
+	fs = boltfs
+
+	testdata := [][]string{
+
+		// abs path
+		{"/foo/bar/baz/", "/foo/baz"}, // /foo/bar/baz -> /foo/baz
+		{"/foo/baz/"},                 // /foo/baz
+
+		// rel path
+		{"/foo/bar/bat/", "../../bat"}, // /foo/bar/baz -> /foo/baz
+		{"/foo/bat/"},
+
+		// same dir
+		{"/bat/", "/foo"}, // /bat -> /foo
+
+		// broken
+		{"/broken/", "/nil"}, // /broken ->
+
+		// circular absolute
+		{"/circular/one/two/three/", "/circular/one"}, // /broken -> /nil
+
+		// circular relative
+		{"/circular/one/two/four/", "../../"}, // /broken -> /nil
+
+	}
+
+	t.Run("symlinks", func(t *testing.T) {
+		for _, pathset := range testdata {
+			dir := filepath.Clean(pathset[0])
+			if len(pathset) > 1 {
+				fs.MkdirAll(filepath.Clean(pathset[1]), 0700)
+				dir = filepath.Dir(dir)
+			}
+			err := fs.MkdirAll(dir, 0700)
+			if err != nil {
+				t.Logf("%s (error: %v)\n", dir, err)
+				t.Error(err)
+			}
+		}
+		for _, pathset := range testdata {
+			if len(pathset) != 2 {
+				continue
+			}
+			source := filepath.Clean(pathset[1])
+			link := filepath.Clean(pathset[0])
+
+			// t.Logf("Symlink %q %q\n", source, link)
+			err := boltfs.Symlink(source, link)
+			if err != nil {
+				t.Log(err)
+			}
+		}
+
+		err := fs.Remove("/nil")
+		if err != nil {
+			t.Error(err)
+		}
+
+		i := 0
+		err = boltfs.Walk("/", func(path string, info os.FileInfo, err error) error {
+			link := ""
+			if info.Mode()&os.ModeSymlink != 0 {
+				link, err = fs.Readlink(path)
+				if err != nil {
+					return err
+				}
+				link = "-> " + link
+			}
+
+			// t.Logf("%s %s %s\n", info.Mode(), path, link)
+			stat, err := fs.Stat(path)
+			if err != nil {
+				// t.Logf("fs.Stat err=%s", err)
+			}
+			if stat != nil {
+				// t.Logf("Stat: %s %q %s", stat.Mode(), stat.Name(), link)
+			} else {
+				// t.Logf("Stat: <nil>")
+			}
+
+			lstat, err := fs.Lstat(path)
+			if err != nil {
+				t.Errorf("fs.Lstat error=%s", err)
+			}
+			_ = lstat
+			// if lstat != nil {
+			// 	t.Logf("Lstat: %s %q %s\n", lstat.Mode(), lstat.Name(), link)
+			// } else {
+			// 	t.Logf("Lstat: <nil>\n")
+			// }
+			// fmt.Printf("Lstat: %s %q %s\n\n", lstat.Mode(), lstat.Name(), link)
+			i++
+			if i > 100 {
+				return errors.New("too deep")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Error(err)
+		}
+	})
+
+	err = fs.RemoveAll("/")
 	if err != nil {
 		t.Error(err)
 	}
@@ -508,12 +639,17 @@ func TestBoltFS(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	// cleanup
+	err = os.RemoveAll(dbpath)
+	if err != nil {
+		t.Error(err)
+	}
 
 }
 
+// func (fs *FileSystem) Symlink(oldname, newname string) error
+// func (fs *FileSystem) Readlink(name string) (string, error)
 // func (fs *FileSystem) Lstat(name string) (os.FileInfo, error)
 // func (fs *FileSystem) Lchown(name string, uid, gid int) error
-// func (fs *FileSystem) Readlink(name string) (string, error)
-// func (fs *FileSystem) Symlink(oldname, newname string) error
 
 // func (fs *FileSystem) FastWalk(name string, fn func(string, os.FileMode) error) error
