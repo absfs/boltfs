@@ -3,6 +3,7 @@ package boltfs
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	filepath "path"
 	walkpath "path/filepath"
@@ -16,18 +17,14 @@ import (
 	"github.com/absfs/absfs"
 )
 
-// O_ACCESS is a mask for os.FileMode to get the access type,  os.O_RDONLY, os.O_WRONLY and os.O_RDWR
-const O_ACCESS = 0x3
-
 var errNotDir = errors.New("not a directory")
 var errNilIno = errors.New("ino is nil")
 var errNoData = errors.New("no data")
 
-var buckets = []string{"state", "inodes", "data", "symlinks"}
-
 // FileSystem implements absfs.FileSystem for the boltdb packages `github.com/coreos/bbolt`.
 type FileSystem struct {
 	db      *bolt.DB
+	bucket  string
 	rootIno uint64
 	cwd     string
 
@@ -35,87 +32,136 @@ type FileSystem struct {
 }
 
 // NewFS creates a new FileSystem pointer in the convention of other `absfs`,
-// implementations. It takes an absolute or relative path to a `boltdb` file.
-// If the file already exists it will be loaded, otherwise a new file with default configuration is created.
-func NewFS(path string) (*FileSystem, error) {
-	db, err := bolt.Open(path, 0644, nil)
-	if err != nil {
-		return nil, err
-	}
-	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range buckets {
-			_, err := tx.CreateBucketIfNotExists([]byte(name))
-			if err != nil {
-				return err
-			}
-		}
-		return nil
+// implementations. It takes a bolt.DB pointer to, and a bucket name to use
+// as the storage location for the file system buckets. If `bucket` is an
+// empty string file system buckets are created as top level buckets.
+func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
+
+	// create buckets
+	err := db.Update(func(tx *bolt.Tx) error {
+		return bucketInit(tx, bucketpath)
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// load or initialize
 	rootIno := uint64(1)
 
-	db.Update(func(tx *bolt.Tx) error {
-		state := tx.Bucket([]byte("state"))
-		nodes := tx.Bucket([]byte("inodes"))
-		node := new(iNode)
-
-		ino, err := nodes.NextSequence()
+	err = db.Update(func(tx *bolt.Tx) error {
+		bb, err := openBucket(tx, bucketpath)
 		if err != nil {
 			return err
 		}
-		if ino == 0 {
-			node = newInode(0)
-			node.Ino = ino
-			node.countUp()
-			err = encodeNode(nodes, rootIno, node)
-			if err != nil {
-				return err
-			}
-			ino, err = nodes.NextSequence()
-			if err != nil {
-				return err
-			}
-		}
-		rootIno = ino
-		data := state.Get([]byte("rootIno"))
-		if data == nil {
-			err = state.Put([]byte("rootIno"), i2b(rootIno))
-			if err != nil {
-				return err
-			}
-		} else {
-			rootIno = binary.BigEndian.Uint64(data)
-		}
+		b := newFsBucket(bb)
 
-		err = decodeNode(nodes, rootIno, node)
+		// create the `nil` node if it doesn't exist
+		err = b.InodeInit()
 		if err != nil {
-			if err == os.ErrNotExist {
-				err = encodeNode(nodes, rootIno, node)
-				node = newInode(os.ModeDir | 0755)
-				node.Ino = rootIno
-				node.countUp()
-				err = encodeNode(nodes, rootIno, node)
-				if err != nil {
-					return err
-				}
-			} else {
+			return err
+		}
+
+		// load the
+		data := make([]byte, 4)
+		binary.BigEndian.PutUint32(data, uint32(0755))
+		_, err = b.LoadOrSet("umask", data)
+		if err != nil {
+			return err
+		}
+
+		// load the root Ino if one is available
+		data, err = b.LoadOrSet("rootIno", i2b(rootIno))
+		if err != nil {
+			return err
+		}
+		rootIno = b2i(data)
+
+		_, err = b.GetInode(rootIno)
+		if err == nil {
+			return nil
+		}
+
+		if err == os.ErrNotExist {
+			node := newInode(os.ModeDir | 0755)
+			node.countUp()
+			err = b.PutInode(rootIno, node)
+			if err != nil {
+
 				return err
 			}
 		}
-
-		return nil
+		return err
 	})
-
+	if err != nil {
+		return nil, err
+	}
 	fs := &FileSystem{
 		db:      db,
+		bucket:  bucketpath,
 		rootIno: rootIno,
 		cwd:     "/",
 	}
 
-	// tempdir := "/tmp"
-	// umask := os.FileMode(0755)
+	return fs, nil
+
+}
+
+// Open takes an absolute or relative path to a `boltdb` file and an optionl
+// bucket name to store boltfs buckets. If `bucket` is an empty string file
+// system buckets are created as top level buckets. If the file already exists
+// it will be loaded, otherwise a new file with default configuration is
+// created.
+func Open(path, bucketpath string) (*FileSystem, error) {
+
+	// Open or create boltdb file.
+	db, err := bolt.Open(path, 0644, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// create buckets
+	err = db.Update(func(tx *bolt.Tx) error {
+		return bucketInit(tx, bucketpath)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// load or initialize
+	rootIno := uint64(1)
+
+	err = db.Update(func(tx *bolt.Tx) error {
+		b := newFsBucket(tx)
+
+		// create the `nil` node if it doesn't exist
+		err := b.InodeInit()
+		if err != nil {
+			return err
+		}
+
+		// load the root Ino if one is available
+		data, err := b.LoadOrSet("rootIno", i2b(rootIno))
+		if err == nil {
+			rootIno = b2i(data)
+		}
+		node, err := b.GetInode(rootIno)
+		if err != nil {
+			node = newInode(os.ModeDir | 0755)
+			node.countUp()
+			err = b.PutInode(rootIno, node)
+		}
+
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	fs := &FileSystem{
+		db:      db,
+		bucket:  bucketpath,
+		rootIno: rootIno,
+		cwd:     "/",
+	}
 
 	return fs, nil
 }
@@ -128,18 +174,14 @@ func (fs *FileSystem) Close() error {
 // Umask returns the current `umaks` value. A non zero `umask` will be masked with file and directory creation permissions
 func (fs *FileSystem) Umask() os.FileMode {
 	var umask os.FileMode
-	umask = 0777
-	err := fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("state"))
-		data := b.Get([]byte("umask"))
-		if data != nil {
-			umask = os.FileMode(binary.BigEndian.Uint32(data))
-			return nil
+	err := fs.db.View(func(tx *bolt.Tx) error {
+		b := newFsBucket(tx)
+		data, err := b.Get("umask")
+		if err != nil {
+			return err
 		}
-		data = make([]byte, 4)
-		binary.BigEndian.PutUint32(data, uint32(umask))
-
-		return b.Put([]byte("umask"), data)
+		umask = os.FileMode(binary.BigEndian.Uint32(data))
+		return nil
 	})
 	if err != nil {
 		panic("don't panic! " + err.Error())
@@ -152,12 +194,16 @@ func (fs *FileSystem) Umask() os.FileMode {
 func (fs *FileSystem) SetUmask(umask os.FileMode) {
 	var data [4]byte
 
-	fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("state"))
+	err := fs.db.Update(func(tx *bolt.Tx) error {
+		b := newFsBucket(tx)
 
 		binary.BigEndian.PutUint32(data[:], uint32(umask))
-		return b.Put([]byte("umask"), data[:])
+		return b.Put("umask", data[:])
 	})
+	if err != nil {
+		panic("don't panic! " + err.Error())
+	}
+
 }
 
 // TempDir returns the path to a temporary directory
@@ -195,19 +241,18 @@ func (fs *FileSystem) SetTempdir(tempdir string) {
 func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 	ino = node.Ino
 	err = fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("inodes"))
-		if ino == 0 {
-			ino, err = b.NextSequence()
-			if err != nil {
-				return err
-			}
-			if ino == 0 {
-				panic("nil Ino")
-			}
-			node.Ino = ino
-		}
+		b := newFsBucket(tx)
 
-		return encodeNode(b, ino, node)
+		// b := tx.Bucket([]byte("inodes"))
+		if ino == 0 {
+			ino, err = b.NextInode()
+		}
+		// ino, err = b.NextSequence()
+		if err != nil {
+			return err
+		}
+		return b.PutInode(ino, node)
+
 	})
 	return ino, err
 }
@@ -215,34 +260,39 @@ func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 var errInvalidIno = errors.New("invalid ino")
 
 // saveSymlink saves a path to the Ino provided
-func (fs *FileSystem) saveSymlink(ino uint64, path string) error {
-	if ino == 0 {
-		return errInvalidIno
-	}
-	return fs.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte("symlinks")).Put(i2b(ino), []byte(path))
-	})
-}
+// func (fs *FileSystem) Symlink(ino uint64, path string) error {
+// 	if ino == 0 {
+// 		return errInvalidIno
+// 	}
+// 	return fs.db.Update(func(tx *bolt.Tx) error {
+// 		b := newFsBucket(tx, fs.bucket)
+// 		return b.Symlink(ino, path)
+// 		// return tx.Bucket([]byte("symlinks")).Put(i2b(ino), []byte(path))
+// 	})
+// }
 
-// saveSymlink saves a path to the Ino provided
-func (fs *FileSystem) loadSymlink(ino uint64) (string, error) {
-	if ino == 0 {
-		return "", errInvalidIno
-	}
-	var path string
-	err := fs.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket([]byte("symlinks")).Get(i2b(ino))
-		if data == nil {
-			return os.ErrNotExist
-		}
-		path = string(data)
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return path, nil
-}
+// func (fs *FileSystem) Readlink(ino uint64) (string, error) {
+
+// 	// saveSymlink saves a path to the Ino provided
+// 	// func (fs *FileSystem) loadSymlink(ino uint64) (string, error) {
+// 	// 	if ino == 0 {
+// 	// 		return "", errInvalidIno
+// 	// 	}
+// 	var path string
+// 	err := fs.db.View(func(tx *bolt.Tx) error {
+// 		b := newFsBucket(tx, fs.bucket)
+// 		var err error
+// 		path, err = b.Readlink(ino)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		return nil
+// 	})
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	return path, nil
+// }
 
 // loadInode loads the iNode defined by ino, or an errors
 func (fs *FileSystem) loadInode(ino uint64) (*iNode, error) {
@@ -530,12 +580,15 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 	pathErr := &os.PathError{Op: "open", Path: name}
 
 	dir, filename := fs.cleanPath(name)
+	fmt.Printf("Step 1 - %q\n", name)
 	parent, child := fs.loadParentChild(dir, filename)
 	if parent == nil {
+		fmt.Printf("Step 2 - %q %v\n", name, child)
 		pathErr.Err = os.ErrNotExist
 		pathErr.Path = dir
 		return file, pathErr
 	}
+	fmt.Printf("Step 3 - %q\n", name)
 
 	access := flag & absfs.O_ACCESS
 	if dir == "/" && filename == "" {
@@ -610,7 +663,16 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 		return inodeinfo{filename, node}, nil
 	}
 
-	link, err := fs.loadSymlink(node.Ino)
+	// link, err := fs.loadSymlink(node.Ino)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	var link string
+	err = fs.db.View(func(tx *bolt.Tx) error {
+		b := newFsBucket(tx)
+		link, err = b.Readlink(node.Ino)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -670,10 +732,11 @@ func (fs *FileSystem) Truncate(name string, size int64) error {
 // loadParentChild loads the node for `dir` and the child nodes with name
 // `filename` or nil.
 func (fs *FileSystem) loadParentChild(dir, filename string) (*iNode, *iNode) {
+	fmt.Printf("loadParentChild %q %q\n", dir, filename)
 	filename = strings.Trim(filename, "/")
 
 	if dir == "/" && filename == "" {
-
+		fmt.Printf("loadInode(%d)\n", fs.rootIno)
 		node, err := fs.loadInode(fs.rootIno)
 		if err != nil {
 			return nil, nil
@@ -978,6 +1041,7 @@ func (fs *FileSystem) Chown(name string, uid, gid int) error {
 		pathErr.Err = os.ErrNotExist
 		return pathErr
 	}
+
 	if node.Mode&os.ModeSymlink == 0 {
 		node.Uid = uint32(uid)
 		node.Gid = uint32(gid)
@@ -989,11 +1053,18 @@ func (fs *FileSystem) Chown(name string, uid, gid int) error {
 		}
 		return nil
 	}
-
-	link, err := fs.loadSymlink(node.Ino)
+	var link string
+	err := fs.db.View(func(tx *bolt.Tx) error {
+		var err error
+		b := newFsBucket(tx)
+		link, err = b.Readlink(node.Ino)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		pathErr.Err = nil
-		return pathErr
+		return err
 	}
 	if !filepath.IsAbs(link) {
 		link = filepath.Join(name, link)
@@ -1066,12 +1137,18 @@ func (fs *FileSystem) Readlink(name string) (string, error) {
 		return "", err
 	}
 
-	path, err := fs.loadSymlink(node.Ino)
-	if err != nil {
-		return "", err
-	}
+	var link string
+	err = fs.db.View(func(tx *bolt.Tx) error {
+		var err error
+		b := newFsBucket(tx)
+		link, err = b.Readlink(node.Ino)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 
-	return path, nil
+	return link, nil
 }
 
 // Symlink creates newname as a symbolic link to oldname. If there is an error,
@@ -1097,11 +1174,17 @@ func (fs *FileSystem) Symlink(source, destination string) error {
 		return pathErr
 	}
 
-	err = fs.saveSymlink(ino, source)
-	if err != nil {
-		pathErr.Err = err
-		return pathErr
-	}
+	err = fs.db.Update(func(tx *bolt.Tx) error {
+		b := newFsBucket(tx)
+		b.Symlink(ino, source)
+		return nil
+	})
+
+	// err = fs.saveSymlink(ino, source)
+	// if err != nil {
+	// 	pathErr.Err = err
+	// 	return pathErr
+	// }
 	// fmt.Printf("%d: %s -> %s\n", ino, destination, source)
 	_, err = dstParent.Link(dstFilename, ino)
 	if err != nil {

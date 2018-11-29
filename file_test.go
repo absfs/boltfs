@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/absfs/absfs"
+	bolt "github.com/coreos/bbolt"
 )
 
 func TestFile(t *testing.T) {
@@ -20,8 +21,9 @@ func TestFile(t *testing.T) {
 	// remove any previous test state
 	os.RemoveAll(dbpath)
 
+	db, err := bolt.Open(dbpath, 0644, nil)
 	// setup
-	boltfs, err := NewFS(dbpath)
+	boltfs, err := NewFS(db, "")
 	if err != nil {
 		t.Fatal(err)
 	}

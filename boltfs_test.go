@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/absfs/absfs"
+	bolt "github.com/coreos/bbolt"
 )
 
 func TestBoltFS(t *testing.T) {
@@ -19,8 +20,13 @@ func TestBoltFS(t *testing.T) {
 	os.RemoveAll(dbpath)
 
 	// setup
-	boltfs, err := NewFS(dbpath)
+	// boltfs, err := NewFS(dbpath, "")
+	db, err := bolt.Open(dbpath, 0644, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	boltfs, err := NewFS(db, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +138,12 @@ func TestBoltFS(t *testing.T) {
 			t.Error(err)
 		}
 
+		err = db.Close()
+		if err != nil {
+			t.Error(err)
+		}
 		// Re-open
-		boltfs, err = NewFS(dbpath)
+		boltfs, err = NewFS(db, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -519,9 +529,12 @@ func TestSymlinks(t *testing.T) {
 	// remove any previous test state
 	os.RemoveAll(dbpath)
 
+	db, err := bolt.Open(dbpath, 0644, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// setup
-	boltfs, err := NewFS(dbpath)
-
+	boltfs, err := NewFS(db, "")
 	if err != nil {
 		t.Fatal(err)
 	}
