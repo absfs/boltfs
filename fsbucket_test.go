@@ -150,288 +150,189 @@ func Test_fsBucket_NextInode(t *testing.T) {
 }
 
 func Test_fsBucket_InodeInit(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
 	tests := []struct {
 		name    string
-		fields  fields
+		f       *fsBucket
 		wantErr bool
 	}{
 		// TODO: Add test cases.
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
-			}
-			if err := f.InodeInit(); (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.InodeInit() error = %v, wantErr %v", err, tt.wantErr)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			err := test.f.InodeInit()
+			if (err != nil) != test.wantErr {
+				t.Errorf("fsBucket.InodeInit() error = %v, wantErr %v", err, test.wantErr)
 			}
 		})
 	}
 }
 
 func Test_fsBucket_LoadOrSet(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
+
 	type args struct {
 		key   string
 		value []byte
 	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		want    []byte
-		wantErr bool
-	}{
-		// TODO: Add test cases.
+
+	// setup
+	db, err := bolt.Open("test.db", 0644, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
-			}
-			got, err := f.LoadOrSet(tt.args.key, tt.args.value)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.LoadOrSet() error = %v, wantErr %v", err, tt.wantErr)
+
+	err = db.Update(func(tx *bolt.Tx) error {
+
+		// create buckets
+		err := bucketInit(tx, "")
+		if err != nil {
+			t.Error(err)
+			return err
+		}
+
+		// open buckets
+		b, err := openBucket(tx, "")
+		if err != nil {
+			t.Error(err)
+			return err
+		}
+		f := newFsBucket(b)
+		tests := []struct {
+			name    string
+			f       *fsBucket
+			args    args
+			want    []byte
+			wantErr bool
+		}{
+			{
+				name:    "test1",
+				f:       f,
+				args:    args{key: "key1", value: []byte("value1")},
+				want:    []byte("value1"),
+				wantErr: bool(false),
+			},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+
+				got, err := test.f.LoadOrSet(test.args.key, test.args.value)
+				if (err != nil) != test.wantErr {
+					t.Errorf("fsBucket.LoadOrSet() error = %v, wantErr %v", err, test.wantErr)
+					return
+				}
+				if !reflect.DeepEqual(got, test.want) {
+					t.Errorf("fsBucket.LoadOrSet() = %v, want %v", got, test.want)
+				}
 				return
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("fsBucket.LoadOrSet() = %v, want %v", got, tt.want)
-			}
-		})
+			})
+
+		}
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }
 
-func Test_fsBucket_PutInode(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
+func Test_fsBucket_GetPutInode(t *testing.T) {
 	type args struct {
 		ino  uint64
 		node *iNode
 	}
 	tests := []struct {
 		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
-			}
-			if err := f.PutInode(tt.args.ino, tt.args.node); (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.PutInode() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func Test_fsBucket_GetInode(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
-	type args struct {
-		ino uint64
-	}
-	tests := []struct {
-		name    string
-		fields  fields
+		f       *fsBucket
 		args    args
 		want    *iNode
 		wantErr bool
 	}{
 		// TODO: Add test cases.
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			err := test.f.PutInode(test.args.ino, test.args.node)
+			if err != nil {
+				t.Error(err)
 			}
-			got, err := f.GetInode(tt.args.ino)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.GetInode() error = %v, wantErr %v", err, tt.wantErr)
+
+			got, err := test.f.GetInode(test.args.ino)
+			if (err != nil) != test.wantErr {
+				t.Errorf("fsBucket.GetInode() error = %v, wantErr %v", err, test.wantErr)
 				return
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("fsBucket.GetInode() = %v, want %v", got, tt.want)
+
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("fsBucket.GetInode() = %v, want %v", got, test.want)
 			}
 		})
 	}
 }
 
-func Test_fsBucket_Get(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
+func Test_fsBucket_GetPut(t *testing.T) {
+
 	type args struct {
-		key string
+		key  string
+		data []byte
 	}
+
 	tests := []struct {
 		name    string
-		fields  fields
+		f       *fsBucket
 		args    args
 		want    []byte
 		wantErr bool
 	}{
 		// TODO: Add test cases.
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			err := test.f.Put(test.args.key, test.args.data)
+			if err != nil {
+				t.Error(err)
 			}
-			got, err := f.Get(tt.args.key)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.Get() error = %v, wantErr %v", err, tt.wantErr)
-				return
+
+			got, err := test.f.Get(test.args.key)
+			if (err != nil) != test.wantErr {
+				t.Errorf("fsBucket.Put() error = %v, wantErr %v", err, test.wantErr)
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("fsBucket.Get() = %v, want %v", got, tt.want)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("fsBucket.Get() = %v, want %v", got, test.want)
 			}
 		})
 	}
 }
 
-func Test_fsBucket_Put(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
-	type args struct {
-		key  string
-		data []byte
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
-			}
-			if err := f.Put(tt.args.key, tt.args.data); (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.Put() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func Test_fsBucket_Symlink(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
+func Test_fsBucket_SymlinkReadlink(t *testing.T) {
 	type args struct {
 		ino  uint64
 		path string
 	}
 	tests := []struct {
 		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
-			}
-			if err := f.Symlink(tt.args.ino, tt.args.path); (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.Symlink() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func Test_fsBucket_Readlink(t *testing.T) {
-	type fields struct {
-		state    *bolt.Bucket
-		inodes   *bolt.Bucket
-		data     *bolt.Bucket
-		symlinks *bolt.Bucket
-	}
-	type args struct {
-		ino uint64
-	}
-	tests := []struct {
-		name    string
-		fields  fields
+		f       *fsBucket
 		args    args
 		want    string
 		wantErr bool
 	}{
 		// TODO: Add test cases.
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fsBucket{
-				state:    tt.fields.state,
-				inodes:   tt.fields.inodes,
-				data:     tt.fields.data,
-				symlinks: tt.fields.symlinks,
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			err := test.f.Symlink(test.args.ino, test.args.path)
+			if (err != nil) != test.wantErr {
+				t.Errorf("fsBucket.Symlink() error = %v, wantErr %v", err, test.wantErr)
 			}
-			got, err := f.Readlink(tt.args.ino)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.Readlink() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("fsBucket.Readlink() = %v, want %v", got, tt.want)
+
+			got := test.f.Readlink(test.args.ino)
+			if got != test.want {
+				t.Errorf("fsBucket.Readlink() = %v, want %v", got, test.want)
 			}
 		})
 	}

@@ -670,7 +670,7 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 	var link string
 	err = fs.db.View(func(tx *bolt.Tx) error {
 		b := newFsBucket(tx)
-		link, err = b.Readlink(node.Ino)
+		link = b.Readlink(node.Ino)
 		return nil
 	})
 	if err != nil {
@@ -1055,11 +1055,10 @@ func (fs *FileSystem) Chown(name string, uid, gid int) error {
 	}
 	var link string
 	err := fs.db.View(func(tx *bolt.Tx) error {
-		var err error
 		b := newFsBucket(tx)
-		link, err = b.Readlink(node.Ino)
-		if err != nil {
-			return err
+		link = b.Readlink(node.Ino)
+		if link == "" {
+			return os.ErrNotExist
 		}
 		return nil
 	})
@@ -1139,11 +1138,10 @@ func (fs *FileSystem) Readlink(name string) (string, error) {
 
 	var link string
 	err = fs.db.View(func(tx *bolt.Tx) error {
-		var err error
 		b := newFsBucket(tx)
-		link, err = b.Readlink(node.Ino)
-		if err != nil {
-			return err
+		link = b.Readlink(node.Ino)
+		if link == "" {
+			return os.ErrNotExist
 		}
 		return nil
 	})
