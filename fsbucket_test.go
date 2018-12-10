@@ -1,6 +1,7 @@
 package boltfs
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -83,7 +84,6 @@ func Test_newFsBucket(t *testing.T) {
 }
 
 func Test_fsBucket_NextInode(t *testing.T) {
-
 	tests := []struct {
 		want    uint64
 		save    bool
@@ -95,22 +95,28 @@ func Test_fsBucket_NextInode(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			want:    1,
+			want:    2,
 			save:    true,
 			wantErr: false,
 		},
 		{
-			want:    2,
+			want:    3,
 			save:    false,
 			wantErr: false,
 		},
 	}
-
+	testfile := "NextInode_test.db"
 	// setup
-	db, err := bolt.Open("test.db", 0644, nil)
+	db, err := bolt.Open(testfile, 0644, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		err := os.Remove(testfile)
+		if err != nil {
+			t.Error(err)
+		}
+	}()
 
 	err = db.Update(func(tx *bolt.Tx) error {
 		err := bucketInit(tx, "")
@@ -121,25 +127,24 @@ func Test_fsBucket_NextInode(t *testing.T) {
 		if err != nil {
 			return err
 		}
-
 		f := newFsBucket(b)
 
 		for _, tt := range tests {
-
-			got, err := f.NextInode()
-			node := newInode(0)
+			var ino uint64
 			if tt.save {
-				err = f.PutInode(got, node)
-				if err != nil {
-					return err
-				}
+				node := newInode(0)
+				err = f.PutInode(0, node)
+				ino = node.Ino
+			} else {
+				ino, err = f.NextInode()
 			}
+
 			if (err != nil) != tt.wantErr {
 				t.Errorf("fsBucket.NextInode() error = %v, wantErr %v", err, tt.wantErr)
-				return nil
+				continue
 			}
-			if got != tt.want {
-				t.Errorf("fsBucket.NextInode() = %v, want %v", got, tt.want)
+			if ino != tt.want {
+				t.Errorf("fsBucket.NextInode() = %v, want %v", ino, tt.want)
 			}
 		}
 		return nil
@@ -147,6 +152,7 @@ func Test_fsBucket_NextInode(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+
 }
 
 func Test_fsBucket_InodeInit(t *testing.T) {
@@ -175,11 +181,13 @@ func Test_fsBucket_LoadOrSet(t *testing.T) {
 		value []byte
 	}
 
+	testfile := "LoadOrSet_test.db"
 	// setup
-	db, err := bolt.Open("test.db", 0644, nil)
+	db, err := bolt.Open(testfile, 0644, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer os.Remove(testfile)
 
 	err = db.Update(func(tx *bolt.Tx) error {
 

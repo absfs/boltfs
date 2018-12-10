@@ -3,7 +3,6 @@ package boltfs
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"os"
 	filepath "path"
 	walkpath "path/filepath"
@@ -47,7 +46,12 @@ func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 
 	// load or initialize
 	rootIno := uint64(1)
-
+	fs := &FileSystem{
+		db:      db,
+		bucket:  bucketpath,
+		rootIno: rootIno,
+		cwd:     "/",
+	}
 	err = db.Update(func(tx *bolt.Tx) error {
 		bb, err := openBucket(tx, bucketpath)
 		if err != nil {
@@ -95,13 +99,7 @@ func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	fs := &FileSystem{
-		db:      db,
-		bucket:  bucketpath,
-		rootIno: rootIno,
-		cwd:     "/",
-	}
-
+	fs.rootIno = rootIno
 	return fs, nil
 
 }
@@ -580,15 +578,12 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 	pathErr := &os.PathError{Op: "open", Path: name}
 
 	dir, filename := fs.cleanPath(name)
-	fmt.Printf("Step 1 - %q\n", name)
 	parent, child := fs.loadParentChild(dir, filename)
 	if parent == nil {
-		fmt.Printf("Step 2 - %q %v\n", name, child)
 		pathErr.Err = os.ErrNotExist
 		pathErr.Path = dir
 		return file, pathErr
 	}
-	fmt.Printf("Step 3 - %q\n", name)
 
 	access := flag & absfs.O_ACCESS
 	if dir == "/" && filename == "" {
@@ -732,11 +727,12 @@ func (fs *FileSystem) Truncate(name string, size int64) error {
 // loadParentChild loads the node for `dir` and the child nodes with name
 // `filename` or nil.
 func (fs *FileSystem) loadParentChild(dir, filename string) (*iNode, *iNode) {
-	fmt.Printf("loadParentChild %q %q\n", dir, filename)
+	if fs == nil {
+		panic("receiver may not be nill")
+	}
 	filename = strings.Trim(filename, "/")
 
 	if dir == "/" && filename == "" {
-		fmt.Printf("loadInode(%d)\n", fs.rootIno)
 		node, err := fs.loadInode(fs.rootIno)
 		if err != nil {
 			return nil, nil

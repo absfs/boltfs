@@ -26,14 +26,14 @@ func TestBoltFS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	boltfs, err := NewFS(db, "")
+	bfs, err := NewFS(db, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// test interface compatibility
 	var fs absfs.FileSystem
-	fs = boltfs
+	fs = bfs
 
 	message := "Hello, world!\n"
 	testfile := "test_file.txt"
@@ -52,7 +52,9 @@ func TestBoltFS(t *testing.T) {
 		}
 
 	})
-
+	if bfs == nil {
+		t.Fatal("bfs == nil")
+	}
 	t.Run("read write", func(t *testing.T) {
 
 		f, err := fs.OpenFile(testfile, os.O_RDWR, 0666)
@@ -107,33 +109,37 @@ func TestBoltFS(t *testing.T) {
 		})
 
 	})
-
+	if bfs == nil {
+		t.Fatal("bfs == nil")
+	}
 	t.Run("state", func(t *testing.T) {
-		mode := boltfs.Umask()
-		if mode != 0777 {
-			t.Error("incorrect default umask")
+		mode := bfs.Umask()
+		if mode != 0755 {
+			t.Errorf("incorrect default umask %o", mode)
 		}
 
-		boltfs.SetUmask(0700)
+		bfs.SetUmask(0700)
 
-		mode = boltfs.Umask()
+		mode = bfs.Umask()
 		if mode != 0700 {
 			t.Error("incorrect updated umask")
 		}
 
-		tempdir := boltfs.TempDir()
+		tempdir := bfs.TempDir()
 		if tempdir != "/tmp" {
 			t.Error("incorrect default temp dir")
 		}
 
-		boltfs.SetTempdir("/foo/bar")
-		tempdir = boltfs.TempDir()
+		bfs.SetTempdir("/foo/bar")
+		tempdir = bfs.TempDir()
 		if tempdir != "/foo/bar" {
 			t.Error("incorrect updated temp dir")
 		}
-
+		if bfs == nil {
+			t.Fatal("bfs == nil")
+		}
 		// Close
-		err = boltfs.Close()
+		err = bfs.Close()
 		if err != nil {
 			t.Error(err)
 		}
@@ -143,49 +149,59 @@ func TestBoltFS(t *testing.T) {
 			t.Error(err)
 		}
 		// Re-open
-		boltfs, err = NewFS(db, "")
+		db, err := bolt.Open(dbpath, 0644, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fs = boltfs
-
-		mode = boltfs.Umask()
+		bfs, err = NewFS(db, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fs = bfs
+		if bfs == nil {
+			t.Fatal("bfs == nil")
+		}
+		mode = bfs.Umask()
 		if mode != 0700 {
 			t.Error("incorrect updated umask")
 		}
 
-		tempdir = boltfs.TempDir()
+		tempdir = bfs.TempDir()
 		if tempdir != "/foo/bar" {
 			t.Error("incorrect updated temp dir")
 		}
 
 	})
-
+	if bfs == nil {
+		t.Fatal("bfs == nil")
+	}
 	t.Run("separators", func(t *testing.T) {
 
-		if boltfs.Separator() != '/' {
-			t.Errorf("wrong path separator %q", boltfs.Separator())
+		if bfs.Separator() != '/' {
+			t.Errorf("wrong path separator %q", bfs.Separator())
 		}
 
-		if boltfs.ListSeparator() != ':' {
-			t.Errorf("wrong list separator %q", boltfs.ListSeparator())
+		if bfs.ListSeparator() != ':' {
+			t.Errorf("wrong list separator %q", bfs.ListSeparator())
 		}
 
 	})
-
+	if bfs == nil {
+		t.Fatal("bfs == nil")
+	}
 	t.Run("directory", func(t *testing.T) {
 
 		err := fs.Mkdir("foo", 0755)
 		if err != nil {
 			f, e := fs.Open("/")
 			if e != nil {
-				panic(e)
+				t.Fatal(e)
 			}
 			defer f.Close()
 
 			list, e := f.Readdirnames(-1)
 			if e != nil {
-				panic(e)
+				t.Fatal(e)
 			}
 
 			t.Logf("files %s", list)
@@ -245,7 +261,7 @@ func TestBoltFS(t *testing.T) {
 		testloop := func(tests []testStruct) {
 			for _, test := range tests {
 
-				f, err := boltfs.Open(test.Path)
+				f, err := bfs.Open(test.Path)
 				if err != nil {
 					t.Errorf("%q %s", test.Path, err)
 					return
@@ -289,7 +305,7 @@ func TestBoltFS(t *testing.T) {
 		// run the tests described inline above
 		testloop(testsBefore)
 
-		err := boltfs.Move("/"+testfile, testfile)
+		err := bfs.Move("/"+testfile, testfile)
 		if err != nil {
 			t.Error(err)
 			return
@@ -321,7 +337,7 @@ func TestBoltFS(t *testing.T) {
 
 		testloop(testsBefore)
 
-		err = boltfs.Copy("/foo/bar/baz/"+testfile, "/foo/"+testfile)
+		err = bfs.Copy("/foo/bar/baz/"+testfile, "/foo/"+testfile)
 		if err != nil {
 			t.Error(err)
 			return
@@ -462,7 +478,7 @@ func TestBoltFS(t *testing.T) {
 	}
 	i := 0
 	t.Run("walk", func(t *testing.T) {
-		err := boltfs.Walk("/", func(path string, info os.FileInfo, err error) error {
+		err := bfs.Walk("/", func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
@@ -511,7 +527,7 @@ func TestBoltFS(t *testing.T) {
 		t.Error(err)
 	}
 
-	err = boltfs.Close()
+	err = bfs.Close()
 	if err != nil {
 		t.Error(err)
 	}
