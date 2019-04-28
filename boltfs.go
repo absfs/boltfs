@@ -363,52 +363,54 @@ func (fs *FileSystem) ListSeparator() uint8 {
 	return ':'
 }
 
-// Move is a convenience funciton that moves the `source` path to the `destination`,
-// it will return an error if the `destination` path already exists
-func (fs *FileSystem) Move(source, destination string) error {
-	pathErr := &os.PathError{Op: "move", Path: source}
-	if source == "/" {
-		pathErr.Err = errors.New("the root folder may not be moved or renamed")
-		return pathErr
+// Rename renames (moves) oldpath to newpath. If newpath already exists and
+// is not a directory, Rename replaces it. OS-specific restrictions may apply
+// when oldpath and newpath are in different directories. If there is an
+// error, it will be of type *LinkError.
+func (fs *FileSystem) Rename(oldpath, newpath string) error {
+	linkErr := &os.LinkError{Op: "move", Old: oldpath, New: newpath}
+	if oldpath == "/" {
+		linkErr.Err = errors.New("the root folder may not be moved or renamed")
+		return linkErr
 	}
 
-	srcDir, srcFilename := fs.cleanPath(source)
-	dstDir, dstFilename := fs.cleanPath(destination)
+	srcDir, srcFilename := fs.cleanPath(oldpath)
+	dstDir, dstFilename := fs.cleanPath(newpath)
 	srcParent, srcChild := fs.loadParentChild(srcDir, srcFilename)
 	dstParent, dstChild := fs.loadParentChild(dstDir, dstFilename)
 
 	if srcParent == nil {
-		pathErr.Err = os.ErrNotExist
-		pathErr.Path = srcDir
-		return pathErr
+		linkErr.Err = os.ErrNotExist
+		linkErr.Old = srcDir
+		return linkErr
 	}
 	if srcChild == nil {
-		pathErr.Err = os.ErrNotExist
-		pathErr.Path = filepath.Join(srcDir, srcFilename)
-		return pathErr
+		linkErr.Err = os.ErrNotExist
+		linkErr.Old = filepath.Join(srcDir, srcFilename)
+		return linkErr
 	}
 	if dstChild != nil {
-		pathErr.Err = os.ErrExist
-		pathErr.Path = filepath.Join(dstDir, dstFilename)
-		return pathErr
+		linkErr.Err = os.ErrExist
+		linkErr.New = filepath.Join(dstDir, dstFilename)
+		return linkErr
 	}
 
 	_, err := dstParent.Link(dstFilename, srcChild.Ino)
 	if err != nil {
-		pathErr.Err = err
-		return pathErr
+		linkErr.Err = err
+		return linkErr
 	}
 
 	_, err = fs.saveInode(dstParent)
 	if err != nil {
-		pathErr.Err = err
-		return pathErr
+		linkErr.Err = err
+		return linkErr
 	}
 
 	_, err = srcParent.Unlink(srcFilename)
 	if err != nil {
-		pathErr.Err = err
-		return pathErr
+		linkErr.Err = err
+		return linkErr
 	}
 
 	if dstChild != nil {
@@ -416,21 +418,21 @@ func (fs *FileSystem) Move(source, destination string) error {
 	}
 	_, err = fs.saveInode(srcParent)
 	if err != nil {
-		pathErr.Err = err
-		return pathErr
+		linkErr.Err = err
+		return linkErr
 	}
 
 	// shouldn't have to
 	// _, err = fs.saveInode(dstChild)
 	// if err != nil {
-	// 	pathErr.Err = err
-	// 	return pathErr
+	// 	linkErr.Err = err
+	// 	return linkErr
 	// }
 
 	return nil
 }
 
-// Copy is a convenience funciton that duplicates the `source` path to the `destination`
+// Copy is a convenience funciton that duplicates the `source` path to the `newpath`
 func (fs *FileSystem) Copy(source, destination string) error {
 	pathErr := &os.PathError{Op: "copy", Path: source}
 	if source == "/" {
