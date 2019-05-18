@@ -12,7 +12,37 @@ import (
 	bolt "github.com/coreos/bbolt"
 )
 
+func BeforeEach(t *testing.T) *bolt.DB {
+	dbpath := "testing_BoltFS.db"
+
+	// remove any previous test state
+	os.RemoveAll(dbpath)
+
+	// setup
+	// boltfs, err := NewFS(dbpath, "")
+	db, err := bolt.Open(dbpath, 0644, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return db
+}
+
 func TestBoltFS(t *testing.T) {
+	db := BeforeEach(t)
+	defer db.Close()
+
+	var fs absfs.SymlinkFileSystem
+	var err error
+
+	fs, err = NewFS(db, "")
+	if err != nil {
+		t.Error(err)
+	}
+	_ = fs
+}
+
+func TestFileSystem(t *testing.T) {
 
 	dbpath := "testing_BoltFS.db"
 
