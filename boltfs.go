@@ -31,7 +31,7 @@ type FileSystem struct {
 }
 
 // NewFS creates a new FileSystem pointer in the convention of other `absfs`,
-// implementations. It takes a bolt.DB pointer to, and a bucket name to use
+// implementations. It takes a bolt.DB pointer, and a bucket name to use
 // as the storage location for the file system buckets. If `bucket` is an
 // empty string file system buckets are created as top level buckets.
 func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
@@ -106,9 +106,9 @@ func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 
 // Open takes an absolute or relative path to a `boltdb` file and an optionl
 // bucket name to store boltfs buckets. If `bucket` is an empty string file
-// system buckets are created as top level buckets. If the file already exists
-// it will be loaded, otherwise a new file with default configuration is
-// created.
+// system buckets are created as top level buckets. If the bolt database already
+// exists it will be loaded, otherwise a new database is created with with
+// default configuration.
 func Open(path, bucketpath string) (*FileSystem, error) {
 
 	// Open or create boltdb file.
@@ -169,7 +169,8 @@ func (fs *FileSystem) Close() error {
 	return fs.db.Close()
 }
 
-// Umask returns the current `umaks` value. A non zero `umask` will be masked with file and directory creation permissions
+// Umask returns the current `umaks` value. A non zero `umask` will be masked
+// with file and directory creation permissions
 func (fs *FileSystem) Umask() os.FileMode {
 	var umask os.FileMode
 	err := fs.db.View(func(tx *bolt.Tx) error {
@@ -224,7 +225,8 @@ func (fs *FileSystem) TempDir() string {
 	return tempdir
 }
 
-// SetTempdir sets the path to a temporary directory, but does not create the actual directorys
+// SetTempdir sets the path to a temporary directory, but does not create the
+// actual directories.
 func (fs *FileSystem) SetTempdir(tempdir string) {
 	fs.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("state"))
@@ -232,10 +234,10 @@ func (fs *FileSystem) SetTempdir(tempdir string) {
 	})
 }
 
-// saveInode save an iNode to the databased.  If the iNode's ino number is
-// non-zero the node will be saved with the ino number provided.
-// If the Ino value is zero (the nil value) then a new ino is created. In both
-// cases the ino value is returned.
+// saveInode save an iNode to the databased.  If the iNode's `ino` number is
+// non-zero the node will be saved with the `ino` provided.
+// If `ino` is zero (the nil value) then a new `ino` is created. In both
+// cases the `ino` value is returned.
 func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 	ino = node.Ino
 	err = fs.db.Update(func(tx *bolt.Tx) error {
@@ -292,7 +294,7 @@ var errInvalidIno = errors.New("invalid ino")
 // 	return path, nil
 // }
 
-// loadInode loads the iNode defined by ino, or an errors
+// loadInode - loads the iNode defined by `ino` or returns an error
 func (fs *FileSystem) loadInode(ino uint64) (*iNode, error) {
 	if ino == 0 {
 		return nil, errNilIno
@@ -306,7 +308,7 @@ func (fs *FileSystem) loadInode(ino uint64) (*iNode, error) {
 	return node, err
 }
 
-//  saveData saves file data for a given ino *(iNode number)*
+// saveData - saves file data for a given `ino` or returns an error
 func (fs *FileSystem) saveData(ino uint64, data []byte) error {
 	if ino == 0 {
 		return errNilIno
@@ -318,7 +320,7 @@ func (fs *FileSystem) saveData(ino uint64, data []byte) error {
 	})
 }
 
-// loadData loads file data for a given ino *(iNode number)*
+// loadData - loads file data for a given `ino` or returns an error
 func (fs *FileSystem) loadData(ino uint64) ([]byte, error) {
 	if ino == 0 {
 		return nil, errNilIno
@@ -342,7 +344,8 @@ func (fs *FileSystem) loadData(ino uint64) ([]byte, error) {
 	return data, err
 }
 
-//  cleanPath takes the absolute or relative path provided by `name` and returns the directory and filename of the cleand absolute path.
+// cleanPath - takes the absolute or relative path provided by `name` and
+// returns the directory and filename of the cleand absolute path.
 func (fs *FileSystem) cleanPath(name string) (string, string) {
 	path := name
 	if !filepath.IsAbs(path) {
@@ -432,7 +435,8 @@ func (fs *FileSystem) Rename(oldpath, newpath string) error {
 	return nil
 }
 
-// Copy is a convenience funciton that duplicates the `source` path to the `newpath`
+// Copy is a convenience funciton that duplicates the `source` path to the
+// `newpath`
 func (fs *FileSystem) Copy(source, destination string) error {
 	pathErr := &os.PathError{Op: "copy", Path: source}
 	if source == "/" {
@@ -501,7 +505,8 @@ func (fs *FileSystem) Copy(source, destination string) error {
 	return nil
 }
 
-// Chdir changes the current directory to the absolute or relative path provided by `Chdir`
+// Chdir - changes the current directory to the absolute or relative path
+// provided by `Chdir`
 func (fs *FileSystem) Chdir(name string) error {
 	dir, filename := fs.cleanPath(name)
 	_, err := fs.resolve(dir)
@@ -522,8 +527,8 @@ func (fs *FileSystem) Open(name string) (absfs.File, error) {
 	return fs.OpenFile(name, os.O_RDONLY, 0)
 }
 
-// Create is a convenance function that opens a file for reading and writting. If the file does not
-// exist it is created, if it does then it is truncated.
+// Create is a convenance function that opens a file for reading and writting.
+// If the file does not exist it is created, if it does then it is truncated.
 func (fs *FileSystem) Create(name string) (absfs.File, error) {
 	return fs.OpenFile(name, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0777)
 }
@@ -571,10 +576,11 @@ func (fs *FileSystem) resolve(path string) (*iNode, error) {
 
 }
 
-// OpenFile is the generalized open call; most users will use Open or Create instead.
-// It opens the named file with specified flag (O_RDONLY etc.) and perm (before umask), if applicable.
-// If successful, methods on the returned File can be used for I/O. If there is an error, it will be
-// of type *os.PathError.
+// OpenFile is the generalized open call; most users will use Open or Create
+// instead. It opens the named file with specified flag (O_RDONLY etc.) and
+// perm (before umask), if applicable. If successful, methods on the returned
+// File can be used for I/O. If there is an error, it will be of type
+// *os.PathError.
 func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
 	file := &absfs.InvalidFile{Path: name}
 	pathErr := &os.PathError{Op: "open", Path: name}
@@ -644,7 +650,8 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 	return &File{fs: fs, name: name, flags: flag, node: child}, nil
 }
 
-// Stat returns the FileInfo structure describing file. If there is an error, it will be of type *os.PathError.
+// Stat returns the FileInfo structure describing file. If there is an error,
+// it will be of type *os.PathError.
 func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 
 	dir, filename := fs.cleanPath(name)
@@ -837,10 +844,10 @@ func (fs *FileSystem) Mkdir(name string, perm os.FileMode) error {
 	return nil
 }
 
-// MkdirAll creates a directory named path, along with any necessary parents, and returns
-// nil, or else returns an error. The permission bits perm (before umask) are used for all
-// directories that MkdirAll creates. If path is already a directory, MkdirAll does nothing
-// and returns nil. child = newInode(os.ModeDir | (fs.Umask()&perm)&^os.ModeType)
+// MkdirAll creates a directory named path, along with any necessary parents,
+// and returns nil, or else returns an error. The permission bits perm (before
+// umask) are used for all directories that MkdirAll creates. If path is already
+// a directory, MkdirAll does nothing and returns nil.
 func (fs *FileSystem) MkdirAll(name string, perm os.FileMode) error {
 	dir, filename := fs.cleanPath(name)
 	name = strings.TrimLeft(filepath.Join(dir, filename), "/")
@@ -854,7 +861,8 @@ func (fs *FileSystem) MkdirAll(name string, perm os.FileMode) error {
 	return nil
 }
 
-// Remove removes the named file or (empty) directory. If there is an error, it will be of type *PathError.
+// Remove removes the named file or (empty) directory. If there is an error, it
+// will be of type *PathError.
 func (fs *FileSystem) Remove(name string) error {
 
 	// cannot remove the root
@@ -949,8 +957,9 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 	})
 }
 
-// RemoveAll removes path and any children it contains. It removes everything it can but
-// returns the first error it encounters. If the path does not exist, RemoveAll returns nil (no error).
+// RemoveAll removes path and any children it contains. It removes everything
+// it can but returns the first error it encounters. If the path does not exist,
+// RemoveAll returns nil (no error).
 func (fs *FileSystem) RemoveAll(name string) error {
 
 	dir, filename := fs.cleanPath(name)
