@@ -231,10 +231,12 @@ func (f *File) Readdirnames(n int) ([]string, error) {
 	if f.diroffset >= len(children) {
 		return list, io.EOF
 	}
-	if n < 1 {
-		n = len(children)
+	if n < 1 || len(children[f.diroffset:]) < n {
+		n = len(children[f.diroffset:])
 	}
-	list = make([]string, n-f.diroffset)
+
+	list = make([]string, n)
+
 	for i, entry := range children[f.diroffset:n] {
 		list[i] = entry.Name
 	}
