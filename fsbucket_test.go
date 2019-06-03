@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	bolt "github.com/coreos/bbolt"
+	bolt "github.com/etcd-io/bbolt"
 )
 
 func Test_newFsBucket(t *testing.T) {
@@ -161,7 +161,7 @@ func Test_fsBucket_InodeInit(t *testing.T) {
 		f       *fsBucket
 		wantErr bool
 	}{
-		// TODO: Add test cases.
+	// TODO: Add test cases.
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -255,7 +255,7 @@ func Test_fsBucket_GetPutInode(t *testing.T) {
 		want    *iNode
 		wantErr bool
 	}{
-		// TODO: Add test cases.
+	// TODO: Add test cases.
 	}
 
 	for _, test := range tests {
@@ -293,7 +293,7 @@ func Test_fsBucket_GetPut(t *testing.T) {
 		want    []byte
 		wantErr bool
 	}{
-		// TODO: Add test cases.
+	// TODO: Add test cases.
 	}
 
 	for _, test := range tests {
@@ -327,7 +327,7 @@ func Test_fsBucket_SymlinkReadlink(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		// TODO: Add test cases.
+	// TODO: Add test cases.
 	}
 
 	for _, test := range tests {

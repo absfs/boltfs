@@ -12,7 +12,7 @@ import (
 	"unicode"
 
 	"github.com/absfs/absfs"
-	bolt "github.com/coreos/bbolt"
+	bolt "github.com/etcd-io/bbolt"
 )
 
 func TestFile(t *testing.T) {

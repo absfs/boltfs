@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	bolt "github.com/coreos/bbolt"
+	bolt "github.com/etcd-io/bbolt"
 
 	"github.com/absfs/absfs"
 )
