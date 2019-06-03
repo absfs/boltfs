@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	bolt "github.com/etcd-io/bbolt"
+	bolt "go.etcd.io/bbolt"
 )
 
 func Test_newFsBucket(t *testing.T) {

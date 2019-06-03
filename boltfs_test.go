@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/absfs/absfs"
-	bolt "github.com/etcd-io/bbolt"
+	bolt "go.etcd.io/bbolt"
 )
 
 func BeforeEach(t *testing.T) *bolt.DB {

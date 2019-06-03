@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	bolt "github.com/etcd-io/bbolt"
+	bolt "go.etcd.io/bbolt"
 )
 
 var errNilNode = errors.New("nil node")

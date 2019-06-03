@@ -5,7 +5,7 @@ import (
 	filepath "path"
 	"strings"
 
-	bolt "github.com/etcd-io/bbolt"
+	bolt "go.etcd.io/bbolt"
 )
 
 var buckets = []string{"state", "inodes", "data", "symlinks"}
