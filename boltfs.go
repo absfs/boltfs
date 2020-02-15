@@ -831,7 +831,7 @@ func (fs *FileSystem) Mkdir(name string, perm os.FileMode) error {
 	dir, filename := fs.cleanPath(name)
 	parent, child := fs.loadParentChild(dir, filename)
 	if child != nil {
-		pathErr.Err = syscall.EEXIST
+		pathErr.Err = os.ErrExist
 		return pathErr
 	}
 
@@ -855,7 +855,14 @@ func (fs *FileSystem) MkdirAll(name string, perm os.FileMode) error {
 	path := "/"
 	for _, p := range strings.Split(name, "/") {
 		path = filepath.Join(path, p)
-		fs.Mkdir(path, perm)
+		err := fs.Mkdir(path, perm)
+
+		if err != nil {
+			patherr := err.(*os.PathError)
+			if patherr.Err != os.ErrExist {
+				return err
+			}
+		}
 	}
 
 	return nil
