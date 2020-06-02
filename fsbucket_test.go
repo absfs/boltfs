@@ -8,7 +8,7 @@ import (
 	bolt "github.com/coreos/bbolt"
 )
 
-func Test_newFsBucket(t *testing.T) {
+func Test_newFsTx(t *testing.T) {
 	type args struct {
 		tx         *bolt.Tx
 		bucketpath string
@@ -40,7 +40,7 @@ func Test_newFsBucket(t *testing.T) {
 
 	for _, tt := range tests {
 		bucketpath := tt.args.bucketpath
-		var want *fsBucket
+		var want *fsTx
 
 		err = db.Update(func(tx *bolt.Tx) error {
 
@@ -58,8 +58,9 @@ func Test_newFsBucket(t *testing.T) {
 				return err
 			}
 
-			// manually constructed reference fsBucket
-			want = &fsBucket{
+			// manually constructed reference fsTx
+			want = &fsTx{
+				tx:       tx,
 				state:    b.Bucket([]byte("state")),
 				inodes:   b.Bucket([]byte("inodes")),
 				data:     b.Bucket([]byte("data")),
@@ -74,16 +75,16 @@ func Test_newFsBucket(t *testing.T) {
 			// 	return err
 			// }
 
-			got := newFsBucket(b)
+			got := newFsTx(b, tx)
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("newFsBucket(, %q) = %v, want %v", bucketpath, got, want)
+				t.Errorf("newFsTx(, %q) = %v, want %v", bucketpath, got, want)
 			}
 			return nil
 		})
 	}
 }
 
-func Test_fsBucket_NextInode(t *testing.T) {
+func Test_fsTx_NextInode(t *testing.T) {
 	tests := []struct {
 		want    uint64
 		save    bool
@@ -127,7 +128,7 @@ func Test_fsBucket_NextInode(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		f := newFsBucket(b)
+		f := newFsTx(b, tx)
 
 		for _, tt := range tests {
 			var ino uint64
@@ -140,11 +141,11 @@ func Test_fsBucket_NextInode(t *testing.T) {
 			}
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("fsBucket.NextInode() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("fsTx.NextInode() error = %v, wantErr %v", err, tt.wantErr)
 				continue
 			}
 			if ino != tt.want {
-				t.Errorf("fsBucket.NextInode() = %v, want %v", ino, tt.want)
+				t.Errorf("fsTx.NextInode() = %v, want %v", ino, tt.want)
 			}
 		}
 		return nil
@@ -155,10 +156,10 @@ func Test_fsBucket_NextInode(t *testing.T) {
 
 }
 
-func Test_fsBucket_InodeInit(t *testing.T) {
+func Test_fsTx_InodeInit(t *testing.T) {
 	tests := []struct {
 		name    string
-		f       *fsBucket
+		f       *fsTx
 		wantErr bool
 	}{
 		// TODO: Add test cases.
@@ -168,13 +169,13 @@ func Test_fsBucket_InodeInit(t *testing.T) {
 
 			err := test.f.InodeInit()
 			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.InodeInit() error = %v, wantErr %v", err, test.wantErr)
+				t.Errorf("fsTx.InodeInit() error = %v, wantErr %v", err, test.wantErr)
 			}
 		})
 	}
 }
 
-func Test_fsBucket_LoadOrSet(t *testing.T) {
+func Test_fsTx_LoadOrSet(t *testing.T) {
 
 	type args struct {
 		key   string
@@ -204,10 +205,10 @@ func Test_fsBucket_LoadOrSet(t *testing.T) {
 			t.Error(err)
 			return err
 		}
-		f := newFsBucket(b)
+		f := newFsTx(b, tx)
 		tests := []struct {
 			name    string
-			f       *fsBucket
+			f       *fsTx
 			args    args
 			want    []byte
 			wantErr bool
@@ -226,11 +227,11 @@ func Test_fsBucket_LoadOrSet(t *testing.T) {
 
 				got, err := test.f.LoadOrSet(test.args.key, test.args.value)
 				if (err != nil) != test.wantErr {
-					t.Errorf("fsBucket.LoadOrSet() error = %v, wantErr %v", err, test.wantErr)
+					t.Errorf("fsTx.LoadOrSet() error = %v, wantErr %v", err, test.wantErr)
 					return
 				}
 				if !reflect.DeepEqual(got, test.want) {
-					t.Errorf("fsBucket.LoadOrSet() = %v, want %v", got, test.want)
+					t.Errorf("fsTx.LoadOrSet() = %v, want %v", got, test.want)
 				}
 				return
 			})
@@ -243,14 +244,14 @@ func Test_fsBucket_LoadOrSet(t *testing.T) {
 	}
 }
 
-func Test_fsBucket_GetPutInode(t *testing.T) {
+func Test_fsTx_GetPutInode(t *testing.T) {
 	type args struct {
 		ino  uint64
 		node *iNode
 	}
 	tests := []struct {
 		name    string
-		f       *fsBucket
+		f       *fsTx
 		args    args
 		want    *iNode
 		wantErr bool
@@ -268,18 +269,18 @@ func Test_fsBucket_GetPutInode(t *testing.T) {
 
 			got, err := test.f.GetInode(test.args.ino)
 			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.GetInode() error = %v, wantErr %v", err, test.wantErr)
+				t.Errorf("fsTx.GetInode() error = %v, wantErr %v", err, test.wantErr)
 				return
 			}
 
 			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("fsBucket.GetInode() = %v, want %v", got, test.want)
+				t.Errorf("fsTx.GetInode() = %v, want %v", got, test.want)
 			}
 		})
 	}
 }
 
-func Test_fsBucket_GetPut(t *testing.T) {
+func Test_fsTx_GetPut(t *testing.T) {
 
 	type args struct {
 		key  string
@@ -288,7 +289,7 @@ func Test_fsBucket_GetPut(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		f       *fsBucket
+		f       *fsTx
 		args    args
 		want    []byte
 		wantErr bool
@@ -306,23 +307,23 @@ func Test_fsBucket_GetPut(t *testing.T) {
 
 			got, err := test.f.Get(test.args.key)
 			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.Put() error = %v, wantErr %v", err, test.wantErr)
+				t.Errorf("fsTx.Put() error = %v, wantErr %v", err, test.wantErr)
 			}
 			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("fsBucket.Get() = %v, want %v", got, test.want)
+				t.Errorf("fsTx.Get() = %v, want %v", got, test.want)
 			}
 		})
 	}
 }
 
-func Test_fsBucket_SymlinkReadlink(t *testing.T) {
+func Test_fsTx_SymlinkReadlink(t *testing.T) {
 	type args struct {
 		ino  uint64
 		path string
 	}
 	tests := []struct {
 		name    string
-		f       *fsBucket
+		f       *fsTx
 		args    args
 		want    string
 		wantErr bool
@@ -335,12 +336,12 @@ func Test_fsBucket_SymlinkReadlink(t *testing.T) {
 
 			err := test.f.Symlink(test.args.ino, test.args.path)
 			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.Symlink() error = %v, wantErr %v", err, test.wantErr)
+				t.Errorf("fsTx.Symlink() error = %v, wantErr %v", err, test.wantErr)
 			}
 
 			got := test.f.Readlink(test.args.ino)
 			if got != test.want {
-				t.Errorf("fsBucket.Readlink() = %v, want %v", got, test.want)
+				t.Errorf("fsTx.Readlink() = %v, want %v", got, test.want)
 			}
 		})
 	}

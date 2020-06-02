@@ -305,7 +305,7 @@ func TestBoltFS(t *testing.T) {
 		// run the tests described inline above
 		testloop(testsBefore)
 
-		err := bfs.Move("/"+testfile, testfile)
+		err := bfs.Rename("/"+testfile, testfile)
 		if err != nil {
 			t.Error(err)
 			return

@@ -36,14 +36,6 @@ type FileSystem struct {
 // empty string file system buckets are created as top level buckets.
 func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 
-	// create buckets
-	err := db.Update(func(tx *bolt.Tx) error {
-		return bucketInit(tx, bucketpath)
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	// load or initialize
 	rootIno := uint64(1)
 	fs := &FileSystem{
@@ -52,12 +44,17 @@ func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 		rootIno: rootIno,
 		cwd:     "/",
 	}
-	err = db.Update(func(tx *bolt.Tx) error {
+	err := db.Update(func(tx *bolt.Tx) error {
+		err := bucketInit(tx, bucketpath)
+		if err != nil {
+			return err
+		}
+
 		bb, err := openBucket(tx, bucketpath)
 		if err != nil {
 			return err
 		}
-		b := newFsBucket(bb)
+		b := newFsTx(bb, tx)
 
 		// create the `nil` node if it doesn't exist
 		err = b.InodeInit()
@@ -118,20 +115,29 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 	}
 
 	// create buckets
-	err = db.Update(func(tx *bolt.Tx) error {
-		return bucketInit(tx, bucketpath)
-	})
-	if err != nil {
-		return nil, err
-	}
+	// err = db.Update(func(tx *bolt.Tx) error {
+	// 	return bucketInit(tx, bucketpath)
+	// })
+	// if err != nil {
+	// 	return nil, err
+	// }
 	// load or initialize
 	rootIno := uint64(1)
 
 	err = db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		err := bucketInit(tx, bucketpath)
+		if err != nil {
+			return err
+		}
+
+		bb, err := openBucket(tx, bucketpath)
+		if err != nil {
+			return err
+		}
+		b := newFsTx(bb, tx)
 
 		// create the `nil` node if it doesn't exist
-		err := b.InodeInit()
+		err = b.InodeInit()
 		if err != nil {
 			return err
 		}
@@ -173,7 +179,7 @@ func (fs *FileSystem) Close() error {
 func (fs *FileSystem) Umask() os.FileMode {
 	var umask os.FileMode
 	err := fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b := newFsTx(tx, tx)
 		data, err := b.Get("umask")
 		if err != nil {
 			return err
@@ -193,7 +199,7 @@ func (fs *FileSystem) SetUmask(umask os.FileMode) {
 	var data [4]byte
 
 	err := fs.db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b := newFsTx(tx, tx)
 
 		binary.BigEndian.PutUint32(data[:], uint32(umask))
 		return b.Put("umask", data[:])
@@ -239,7 +245,7 @@ func (fs *FileSystem) SetTempdir(tempdir string) {
 func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 	ino = node.Ino
 	err = fs.db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b := newFsTx(tx, tx)
 
 		// b := tx.Bucket([]byte("inodes"))
 		if ino == 0 {
@@ -263,7 +269,7 @@ var errInvalidIno = errors.New("invalid ino")
 // 		return errInvalidIno
 // 	}
 // 	return fs.db.Update(func(tx *bolt.Tx) error {
-// 		b := newFsBucket(tx, fs.bucket)
+// 		b := newFsTx(tx, fs.bucket)
 // 		return b.Symlink(ino, path)
 // 		// return tx.Bucket([]byte("symlinks")).Put(i2b(ino), []byte(path))
 // 	})
@@ -278,7 +284,7 @@ var errInvalidIno = errors.New("invalid ino")
 // 	// 	}
 // 	var path string
 // 	err := fs.db.View(func(tx *bolt.Tx) error {
-// 		b := newFsBucket(tx, fs.bucket)
+// 		b := newFsTx(tx, fs.bucket)
 // 		var err error
 // 		path, err = b.Readlink(ino)
 // 		if err != nil {
@@ -365,7 +371,7 @@ func (fs *FileSystem) ListSeparator() uint8 {
 
 // Move is a convenience funciton that moves the `source` path to the `destination`,
 // it will return an error if the `destination` path already exists
-func (fs *FileSystem) Move(source, destination string) error {
+func (fs *FileSystem) Rename(source, destination string) error {
 	pathErr := &os.PathError{Op: "move", Path: source}
 	if source == "/" {
 		pathErr.Err = errors.New("the root folder may not be moved or renamed")
@@ -664,7 +670,7 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 	// }
 	var link string
 	err = fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b := newFsTx(tx, tx)
 		link = b.Readlink(node.Ino)
 		return nil
 	})
@@ -1051,7 +1057,7 @@ func (fs *FileSystem) Chown(name string, uid, gid int) error {
 	}
 	var link string
 	err := fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b := newFsTx(tx, tx)
 		link = b.Readlink(node.Ino)
 		if link == "" {
 			return os.ErrNotExist
@@ -1134,7 +1140,7 @@ func (fs *FileSystem) Readlink(name string) (string, error) {
 
 	var link string
 	err = fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b := newFsTx(tx, tx)
 		link = b.Readlink(node.Ino)
 		if link == "" {
 			return os.ErrNotExist
@@ -1169,7 +1175,7 @@ func (fs *FileSystem) Symlink(source, destination string) error {
 	}
 
 	err = fs.db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b := newFsTx(tx, tx)
 		b.Symlink(ino, source)
 		return nil
 	})
