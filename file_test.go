@@ -403,12 +403,3 @@ func camel(name string) string {
 	out[0] = unicode.ToLower(out[0])
 	return string(out)
 }
-
-/*
-
-func (f *File) Stat() (os.FileInfo, error)
-func (f *File) Sync() error
-
-func (f *File) Truncate(size int64) error
-
-*/
