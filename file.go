@@ -11,7 +11,11 @@ import (
 	"github.com/absfs/absfs"
 )
 
-// File implements the absfs.File interface, providing a file interace for boltdb
+// dirWriteFlags represents the flag combination (07200 octal) for a directory
+// opened with write permissions, which should return EOF when read.
+const dirWriteFlags = 3712
+
+// File implements the absfs.File interface, providing a file interface for boltdb
 type File struct {
 	fs *FileSystem
 	// db *bolt.DB
@@ -33,7 +37,7 @@ func (f *File) Name() string {
 // read and any error encountered. At end of file, Read returns 0, io.EOF.
 func (f *File) Read(p []byte) (int, error) {
 
-	if f.flags == 3712 { // 07200
+	if f.flags == dirWriteFlags {
 		return 0, io.EOF
 	}
 	if f.flags&absfs.O_ACCESS == os.O_WRONLY {
@@ -177,7 +181,9 @@ func (f *File) Sync() error {
 // explaining why. At the end of a directory, the error is io.EOF.
 //
 // If n <= 0, Readdir returns all the FileInfo from the directory in a single
-//  slice. In this case, if Readdir succeeds (reads all the way to the end of
+//
+//	slice. In this case, if Readdir succeeds (reads all the way to the end of
+//
 // the directory), it returns the slice and a nil error. If it encounters an
 // error before the end of the directory, Readdir returns the FileInfo read
 // until that point and a non-nil error.
@@ -192,11 +198,18 @@ func (f *File) Readdir(n int) ([]os.FileInfo, error) {
 	if f.diroffset >= len(children) {
 		return nil, io.EOF
 	}
+
+	// Calculate how many entries to return
+	remaining := len(children) - f.diroffset
 	if n < 1 {
-		n = len(children)
+		n = remaining
+	} else if n > remaining {
+		n = remaining
 	}
-	infos := make([]os.FileInfo, n-f.diroffset)
-	for i, entry := range children[f.diroffset:n] {
+
+	infos := make([]os.FileInfo, n)
+	endOffset := f.diroffset + n
+	for i, entry := range children[f.diroffset:endOffset] {
 		node, err := f.fs.loadInode(entry.Ino)
 		if err != nil {
 			return nil, err
@@ -204,7 +217,7 @@ func (f *File) Readdir(n int) ([]os.FileInfo, error) {
 
 		infos[i] = &fileinfo{entry.Name, node}
 	}
-	f.diroffset += n
+	f.diroffset = endOffset
 	return infos, nil
 }
 

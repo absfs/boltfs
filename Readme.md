@@ -24,5 +24,5 @@ Also I may add a Fuse interface implementation if there is interest.
 
 ## License
 
-MIT license. See LICENSE file for more informaitn.
+MIT license. See LICENSE file for more information.
 
