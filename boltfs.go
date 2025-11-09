@@ -26,6 +26,7 @@ type FileSystem struct {
 	bucket  string
 	rootIno uint64
 	cwd     string
+	cache   *inodeCache
 
 	// symlinks map[uint64]string
 }
@@ -51,6 +52,7 @@ func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 		bucket:  bucketpath,
 		rootIno: rootIno,
 		cwd:     "/",
+		cache:   newInodeCache(1000), // Default cache size of 1000 inodes
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
 		bb, err := openBucket(tx, bucketpath)
@@ -159,6 +161,7 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 		bucket:  bucketpath,
 		rootIno: rootIno,
 		cwd:     "/",
+		cache:   newInodeCache(1000), // Default cache size of 1000 inodes
 	}
 
 	return fs, nil
@@ -167,6 +170,29 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 // Close waits for pending writes, then closes the database file.
 func (fs *FileSystem) Close() error {
 	return fs.db.Close()
+}
+
+// CacheStats returns statistics about the inode cache.
+func (fs *FileSystem) CacheStats() CacheStats {
+	if fs.cache == nil {
+		return CacheStats{}
+	}
+	return fs.cache.Stats()
+}
+
+// FlushCache removes all entries from the inode cache.
+func (fs *FileSystem) FlushCache() {
+	if fs.cache != nil {
+		fs.cache.Flush()
+	}
+}
+
+// SetCacheSize changes the maximum size of the inode cache.
+// Setting size to 0 or negative disables the cache.
+func (fs *FileSystem) SetCacheSize(size int) {
+	if fs.cache != nil {
+		fs.cache.Enable(size)
+	}
 }
 
 // Umask returns the current `umask` value. A non zero `umask` will be masked
@@ -491,13 +517,15 @@ func (fs *FileSystem) resolve(path string) (*iNode, error) {
 	node := new(iNode)
 
 	err := fs.db.View(func(tx *bolt.Tx) error {
+		b := newFsBucketWithCache(tx, fs.cache)
 
-		b := tx.Bucket([]byte("inodes"))
 		ino := fs.rootIno
-		err := decodeNode(b, ino, node)
+		loadedNode, err := b.GetInode(ino)
 		if err != nil {
 			return err
 		}
+		*node = *loadedNode
+
 		if path == "/" {
 			return nil
 		}
@@ -512,12 +540,11 @@ func (fs *FileSystem) resolve(path string) (*iNode, error) {
 			}
 
 			// replace node with child or error
-			n := new(iNode)
-			err = decodeNode(b, node.Children[x].Ino, n)
+			loadedNode, err = b.GetInode(node.Children[x].Ino)
 			if err != nil {
 				return err
 			}
-			node = n
+			*node = *loadedNode
 		}
 		return nil
 	})
