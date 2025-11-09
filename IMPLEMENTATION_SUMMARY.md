@@ -1,12 +1,13 @@
-# Implementation Summary: Issue #2 - FUSE Support, Inode Cache, and Snapshots
+# Implementation Summary: Issue #2 - Inode Cache and Snapshots
 
 ## Overview
 
-This implementation successfully addresses GitHub issue #2 by implementing three major features requested by the community:
+This implementation successfully addresses GitHub issues #3 and #4 related to issue #2 by implementing two major features requested by the community:
 
 1. **Inode Cache** (Issue #4) - Thread-safe in-memory caching for performance
 2. **Snapshots** (Issue #3) - Point-in-time filesystem views using BoltDB's MVCC
-3. **FUSE Support** (Issue #2) - Framework for mounting as a real filesystem
+
+Note: FUSE support (Issue #2) will be implemented as a separate absfs-compatible package to maintain composability and allow any absfs.FileSystem implementation to be mounted via FUSE.
 
 ## Implementation Details
 
@@ -99,50 +100,6 @@ sm.ReleaseAll()
 2. **Testing**: Save state before risky operations
 3. **Rollback**: Restore previous filesystem state
 4. **Auditing**: Examine historical filesystem state
-
-### 3. FUSE Support (`fuse.go`)
-
-**Lines of Code**: 612
-**Status**: Framework implementation (requires FUSE library)
-
-#### Key Features:
-- Complete FUSE operation framework
-- File handle management with lifecycle tracking
-- Cache-aware operations for optimal performance
-- Ready for library integration (bazil.org/fuse or hanwen/go-fuse)
-
-#### Implemented Operations:
-- **lookup**: Directory entry resolution
-- **getattr**: File attribute retrieval
-- **readdir**: Directory listing (with . and ..)
-- **read**: File content reading with offset/size
-- **write**: File content writing with expansion
-- **create**: New file creation
-- **mkdir**: Directory creation
-- **unlink**: File deletion with link count management
-- **rename**: Atomic rename with replacement handling
-
-#### API:
-```go
-fuse := fs.NewFUSEServer("/mnt/boltfs")
-
-// Note: Actual mounting requires a FUSE library
-// err := fuse.Mount()
-// defer fuse.Unmount()
-```
-
-#### Architecture:
-- `FUSEServer` struct manages mount state
-- Handle tracking via `fuseHandle` struct
-- Integration with inode cache for performance
-- All operations use `newFsBucketWithCache()`
-
-#### Integration Notes:
-To complete FUSE implementation:
-1. Add FUSE library dependency (`bazil.org/fuse` or `github.com/hanwen/go-fuse`)
-2. Implement library-specific interfaces
-3. Register operation handlers
-4. Add mount/unmount logic
 
 ## Testing
 
@@ -309,19 +266,19 @@ if stats.HitRate() < 70.0 {
 4. `snapshot_test.go` (575 lines)
    - 15 comprehensive tests
 
-5. `fuse.go` (612 lines)
-   - FUSE framework implementation
-
-6. `bench_test.go` (523 lines)
+5. `bench_test.go` (523 lines)
    - Comprehensive benchmark suite
 
-7. `BENCHMARKS.md` (295 lines)
+6. `BENCHMARKS.md` (295 lines)
    - Performance analysis document
+
+7. `FUSE_ANALYSIS.md` (413 lines)
+   - Analysis of FUSE implementation approaches
 
 8. `IMPLEMENTATION_SUMMARY.md` (This file)
 
 ### Total Impact:
-- **Lines Added**: ~3,400
+- **Lines Added**: ~2,800
 - **Files Added**: 7
 - **Files Modified**: 4
 - **Tests Added**: 26+
@@ -342,12 +299,6 @@ if stats.HitRate() < 70.0 {
    - Rollback capabilities
    - Audit trails
 
-3. **Consider FUSE when**:
-   - Need standard filesystem interface
-   - Want to use existing file tools
-   - Integrating with legacy applications
-   - Note: Requires FUSE library integration
-
 ### For Maintainers:
 
 1. **Cache tuning**:
@@ -360,19 +311,19 @@ if stats.HitRate() < 70.0 {
    - Add snapshot expiration/retention policies
    - Implement incremental snapshots
 
-3. **FUSE completion**:
-   - Choose FUSE library (recommend bazil.org/fuse)
-   - Implement mount/unmount
-   - Add FUSE-specific tests
-   - Document FUSE-specific configuration
+3. **FUSE support**:
+   - Create separate absfs-compatible fusefs package
+   - Implement as generic abstraction over absfs.FileSystem
+   - Allows any absfs implementation to be mounted via FUSE
 
 ## Conclusion
 
-This implementation successfully addresses all three features requested in issue #2:
+This implementation successfully addresses issues #3 and #4 related to issue #2:
 
 ✅ **Inode Cache**: Fully implemented, tested, and benchmarked
 ✅ **Snapshots**: Fully implemented with comprehensive API
-✅ **FUSE Support**: Complete framework, ready for library integration
+
+Note: FUSE support (Issue #2) is recommended to be implemented as a separate absfs-compatible package to maintain composability and allow any absfs.FileSystem implementation to benefit from FUSE mounting. See FUSE_ANALYSIS.md for detailed rationale.
 
 The features provide significant performance benefits (5-400x for reads), maintain backward compatibility, and follow the existing codebase patterns. All new code is well-documented, tested, and includes performance benchmarks.
 
@@ -384,5 +335,6 @@ The features provide significant performance benefits (5-400x for reads), mainta
 - 📊 **25+ benchmarks** demonstrating benefits
 - 📚 **Comprehensive documentation**
 - ✅ **Backward compatible**
+- 🏗️ **Composable architecture** (FUSE via separate package)
 
 The implementation is production-ready and provides a solid foundation for future enhancements.
