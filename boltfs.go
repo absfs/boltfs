@@ -587,6 +587,14 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 				pathErr.Err = err
 				return file, pathErr
 			}
+			// Update inode to reflect truncation
+			child.Size = 0
+			child.modified()
+			_, err = fs.saveInode(child)
+			if err != nil {
+				pathErr.Err = err
+				return file, pathErr
+			}
 			// fs.data[int(node.Ino)] = fs.data[int(node.Ino)][:0]
 		}
 	}
