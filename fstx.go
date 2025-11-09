@@ -20,6 +20,7 @@ type fsBucket struct {
 	inodes   *bolt.Bucket
 	data     *bolt.Bucket
 	symlinks *bolt.Bucket
+	cache    *inodeCache // Optional cache for read operations
 }
 
 type bucketer interface {
@@ -27,9 +28,14 @@ type bucketer interface {
 	CreateBucketIfNotExists([]byte) (*bolt.Bucket, error)
 }
 
-// newFsBucket creats a new fsBucket
+// newFsBucket creats a new fsBucket without cache support.
+// For cache-aware operations, use newFsBucketWithCache.
 func newFsBucket(b bucketer) *fsBucket {
+	return newFsBucketWithCache(b, nil)
+}
 
+// newFsBucketWithCache creates a new fsBucket with optional cache support.
+func newFsBucketWithCache(b bucketer, cache *inodeCache) *fsBucket {
 	state := b.Bucket([]byte("state"))
 	if state == nil {
 		return nil
@@ -51,8 +57,8 @@ func newFsBucket(b bucketer) *fsBucket {
 		inodes:   inodes,
 		data:     data,
 		symlinks: symlinks,
+		cache:    cache,
 	}
-
 }
 
 // NextInode returns the next iNode id (Ino), or an error.
@@ -159,7 +165,7 @@ func (f *fsBucket) LoadOrSet(key string, value []byte) ([]byte, error) {
 // PutInode stores an iNode to the given `ino`. If `ino` is `nilIno` then the
 // node is saved as the next ino. `node.Ino` will be set to the ino underwhich
 // the node is saved, wether that be the `ino` argument or a newly generated
-// id.
+// id. The node is also updated in the cache if available.
 func (f *fsBucket) PutInode(ino uint64, node *iNode) error {
 	var err error
 	if ino == 0 {
@@ -169,20 +175,45 @@ func (f *fsBucket) PutInode(ino uint64, node *iNode) error {
 		}
 	}
 	node.Ino = ino
-	return encodeNode(f.inodes, ino, node)
+	err = encodeNode(f.inodes, ino, node)
+	if err != nil {
+		return err
+	}
+
+	// Update cache with clean node (since we just persisted it)
+	if f.cache != nil {
+		f.cache.Put(ino, node, false)
+	}
+
+	return nil
 }
 
 // GetInode returns the stored iNode for the given `ino` id, or an error.
+// It first checks the cache if available, and falls back to loading from disk.
 func (f *fsBucket) GetInode(ino uint64) (*iNode, error) {
 	if ino == nilIno {
 		return nil, errInvalidIno
 	}
 
+	// Try to get from cache first
+	if f.cache != nil {
+		if node := f.cache.Get(ino); node != nil {
+			return node, nil
+		}
+	}
+
+	// Load from disk
 	node := newInode(0)
 	err := decodeNode(f.inodes, ino, node)
 	if err != nil {
 		return nil, err
 	}
+
+	// Cache the loaded node
+	if f.cache != nil {
+		f.cache.Put(ino, node, false)
+	}
+
 	return node, nil
 }
 
