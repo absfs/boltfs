@@ -169,8 +169,8 @@ func (fs *FileSystem) Close() error {
 	return fs.db.Close()
 }
 
-// Umask returns the current `umaks` value. A non zero `umask` will be masked
-// with file and directory creation permissions
+// Umask returns the current `umask` value. A non zero `umask` will be masked
+// with file and directory creation permissions. Returns 0755 if an error occurs.
 func (fs *FileSystem) Umask() os.FileMode {
 	var umask os.FileMode
 	err := fs.db.View(func(tx *bolt.Tx) error {
@@ -183,13 +183,14 @@ func (fs *FileSystem) Umask() os.FileMode {
 		return nil
 	})
 	if err != nil {
-		panic("don't panic! " + err.Error())
+		// Return default umask on error instead of panicking
+		return 0755
 	}
 
 	return umask
 }
 
-// SetUmask sets the current `umaks` value
+// SetUmask sets the current `umask` value. Silently ignores errors.
 func (fs *FileSystem) SetUmask(umask os.FileMode) {
 	var data [4]byte
 
@@ -200,12 +201,14 @@ func (fs *FileSystem) SetUmask(umask os.FileMode) {
 		return b.Put("umask", data[:])
 	})
 	if err != nil {
-		panic("don't panic! " + err.Error())
+		// Silently ignore errors to maintain backwards compatibility
+		// Callers who need error handling should use a wrapper or check state
+		return
 	}
 
 }
 
-// TempDir returns the path to a temporary directory
+// TempDir returns the path to a temporary directory. Returns "/tmp" if an error occurs.
 func (fs *FileSystem) TempDir() string {
 	var tempdir string
 	tempdir = "/tmp"
@@ -219,16 +222,18 @@ func (fs *FileSystem) TempDir() string {
 		return b.Put([]byte("tempdir"), []byte(tempdir))
 	})
 	if err != nil {
-		panic("don't panic!")
+		// Return default temp directory on error instead of panicking
+		return "/tmp"
 	}
 
 	return tempdir
 }
 
 // SetTempdir sets the path to a temporary directory, but does not create the
-// actual directories.
+// actual directories. Silently ignores errors.
 func (fs *FileSystem) SetTempdir(tempdir string) {
-	fs.db.Update(func(tx *bolt.Tx) error {
+	// Ignore the error to maintain backwards compatibility
+	_ = fs.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("state"))
 		return b.Put([]byte("tempdir"), []byte(tempdir))
 	})
@@ -258,41 +263,6 @@ func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 }
 
 var errInvalidIno = errors.New("invalid ino")
-
-// saveSymlink saves a path to the Ino provided
-// func (fs *FileSystem) Symlink(ino uint64, path string) error {
-// 	if ino == 0 {
-// 		return errInvalidIno
-// 	}
-// 	return fs.db.Update(func(tx *bolt.Tx) error {
-// 		b := newFsBucket(tx, fs.bucket)
-// 		return b.Symlink(ino, path)
-// 		// return tx.Bucket([]byte("symlinks")).Put(i2b(ino), []byte(path))
-// 	})
-// }
-
-// func (fs *FileSystem) Readlink(ino uint64) (string, error) {
-
-// 	// saveSymlink saves a path to the Ino provided
-// 	// func (fs *FileSystem) loadSymlink(ino uint64) (string, error) {
-// 	// 	if ino == 0 {
-// 	// 		return "", errInvalidIno
-// 	// 	}
-// 	var path string
-// 	err := fs.db.View(func(tx *bolt.Tx) error {
-// 		b := newFsBucket(tx, fs.bucket)
-// 		var err error
-// 		path, err = b.Readlink(ino)
-// 		if err != nil {
-// 			return err
-// 		}
-// 		return nil
-// 	})
-// 	if err != nil {
-// 		return "", err
-// 	}
-// 	return path, nil
-// }
 
 // loadInode - loads the iNode defined by `ino` or returns an error
 func (fs *FileSystem) loadInode(ino uint64) (*iNode, error) {
@@ -425,17 +395,10 @@ func (fs *FileSystem) Rename(oldpath, newpath string) error {
 		return linkErr
 	}
 
-	// shouldn't have to
-	// _, err = fs.saveInode(dstChild)
-	// if err != nil {
-	// 	linkErr.Err = err
-	// 	return linkErr
-	// }
-
 	return nil
 }
 
-// Copy is a convenience funciton that duplicates the `source` path to the
+// Copy is a convenience function that duplicates the `source` path to the
 // `newpath`
 func (fs *FileSystem) Copy(source, destination string) error {
 	pathErr := &os.PathError{Op: "copy", Path: source}
@@ -486,22 +449,12 @@ func (fs *FileSystem) Copy(source, destination string) error {
 		return pathErr
 	}
 
-	// _, err = srcParent.Unlink(srcFilename)
-	// if err != nil {
-	// 	pathErr.Err = err
-	// 	return pathErr
-	// }
-
-	// if dstChild != nil {
-	// 	dstChild.countDown()
-	// }
 	_, err = fs.saveInode(srcParent)
 	if err != nil {
 		pathErr.Err = err
 		return pathErr
 	}
 
-	// return errors.New("not implemented")
 	return nil
 }
 
@@ -522,12 +475,12 @@ func (fs *FileSystem) Getwd() (dir string, err error) {
 	return fs.cwd, nil
 }
 
-// Open is a convenance function that opens a file in read only mode.
+// Open is a convenience function that opens a file in read only mode.
 func (fs *FileSystem) Open(name string) (absfs.File, error) {
 	return fs.OpenFile(name, os.O_RDONLY, 0)
 }
 
-// Create is a convenance function that opens a file for reading and writting.
+// Create is a convenience function that opens a file for reading and writing.
 // If the file does not exist it is created, if it does then it is truncated.
 func (fs *FileSystem) Create(name string) (absfs.File, error) {
 	return fs.OpenFile(name, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0777)
@@ -536,7 +489,6 @@ func (fs *FileSystem) Create(name string) (absfs.File, error) {
 // resolve resolves the path provided into a iNode, or an error
 func (fs *FileSystem) resolve(path string) (*iNode, error) {
 	node := new(iNode)
-	// var data []byte
 
 	err := fs.db.View(func(tx *bolt.Tx) error {
 
@@ -737,7 +689,7 @@ func (fs *FileSystem) Truncate(name string, size int64) error {
 // `filename` or nil.
 func (fs *FileSystem) loadParentChild(dir, filename string) (*iNode, *iNode) {
 	if fs == nil {
-		panic("receiver may not be nill")
+		panic("receiver may not be nil")
 	}
 	filename = strings.Trim(filename, "/")
 
@@ -1030,7 +982,7 @@ func (fs *FileSystem) RemoveAll(name string) error {
 	return nil
 }
 
-//Chtimes changes the access and modification times of the named file
+// Chtimes changes the access and modification times of the named file
 func (fs *FileSystem) Chtimes(name string, atime time.Time, mtime time.Time) error {
 	dir, filename := fs.cleanPath(name)
 	_, node := fs.loadParentChild(dir, filename)
@@ -1045,7 +997,7 @@ func (fs *FileSystem) Chtimes(name string, atime time.Time, mtime time.Time) err
 	return err
 }
 
-//Chown changes the owner and group ids of the named file
+// Chown changes the owner and group ids of the named file
 func (fs *FileSystem) Chown(name string, uid, gid int) error {
 	pathErr := &os.PathError{Op: "chown", Path: name}
 
@@ -1086,7 +1038,7 @@ func (fs *FileSystem) Chown(name string, uid, gid int) error {
 	return fs.Chown(link, uid, gid)
 }
 
-//Chmod changes the mode of the named file to mode.
+// Chmod changes the mode of the named file to mode.
 func (fs *FileSystem) Chmod(name string, mode os.FileMode) error {
 	dir, filename := fs.cleanPath(name)
 	_, node := fs.loadParentChild(dir, filename)

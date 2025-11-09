@@ -156,21 +156,50 @@ func Test_fsBucket_NextInode(t *testing.T) {
 }
 
 func Test_fsBucket_InodeInit(t *testing.T) {
-	tests := []struct {
-		name    string
-		f       *fsBucket
-		wantErr bool
-	}{
-	// TODO: Add test cases.
+	testfile := "InodeInit_test.db"
+	db, err := bolt.Open(testfile, 0644, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	defer func() {
+		db.Close()
+		os.Remove(testfile)
+	}()
 
-			err := test.f.InodeInit()
-			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.InodeInit() error = %v, wantErr %v", err, test.wantErr)
-			}
-		})
+	err = db.Update(func(tx *bolt.Tx) error {
+		err := bucketInit(tx, "")
+		if err != nil {
+			return err
+		}
+		b, err := openBucket(tx, "")
+		if err != nil {
+			return err
+		}
+		f := newFsBucket(b)
+
+		// Test initialization
+		err = f.InodeInit()
+		if err != nil {
+			t.Errorf("fsBucket.InodeInit() error = %v", err)
+			return err
+		}
+
+		// Verify that inodes were created by checking NextSequence
+		seq, err := f.NextInode()
+		if err != nil {
+			t.Errorf("NextInode() error = %v", err)
+			return err
+		}
+		// After InodeInit, NextSequence should be at least 2
+		// (inode 0 is nil, inode 1 is root/first real inode)
+		if seq < 2 {
+			t.Errorf("Expected NextInode >= 2 after init, got %d", seq)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }
 
@@ -244,104 +273,153 @@ func Test_fsBucket_LoadOrSet(t *testing.T) {
 }
 
 func Test_fsBucket_GetPutInode(t *testing.T) {
-	type args struct {
-		ino  uint64
-		node *iNode
+	testfile := "GetPutInode_test.db"
+	db, err := bolt.Open(testfile, 0644, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	tests := []struct {
-		name    string
-		f       *fsBucket
-		args    args
-		want    *iNode
-		wantErr bool
-	}{
-	// TODO: Add test cases.
-	}
+	defer func() {
+		db.Close()
+		os.Remove(testfile)
+	}()
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	err = db.Update(func(tx *bolt.Tx) error {
+		err := bucketInit(tx, "")
+		if err != nil {
+			return err
+		}
+		b, err := openBucket(tx, "")
+		if err != nil {
+			return err
+		}
+		f := newFsBucket(b)
 
-			err := test.f.PutInode(test.args.ino, test.args.node)
-			if err != nil {
-				t.Error(err)
-			}
+		// Create a test inode
+		testNode := newInode(0755)
+		testNode.Size = 1234
 
-			got, err := test.f.GetInode(test.args.ino)
-			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.GetInode() error = %v, wantErr %v", err, test.wantErr)
-				return
-			}
+		// Put the inode with ino=0 (will auto-generate)
+		err = f.PutInode(0, testNode)
+		if err != nil {
+			t.Errorf("PutInode() error = %v", err)
+			return err
+		}
 
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("fsBucket.GetInode() = %v, want %v", got, test.want)
-			}
-		})
+		// Get the inode back
+		ino := testNode.Ino
+		got, err := f.GetInode(ino)
+		if err != nil {
+			t.Errorf("GetInode() error = %v", err)
+			return err
+		}
+
+		// Verify it matches
+		if got.Size != testNode.Size {
+			t.Errorf("GetInode() Size = %v, want %v", got.Size, testNode.Size)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }
 
 func Test_fsBucket_GetPut(t *testing.T) {
-
-	type args struct {
-		key  string
-		data []byte
+	testfile := "GetPut_test.db"
+	db, err := bolt.Open(testfile, 0644, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() {
+		db.Close()
+		os.Remove(testfile)
+	}()
 
-	tests := []struct {
-		name    string
-		f       *fsBucket
-		args    args
-		want    []byte
-		wantErr bool
-	}{
-	// TODO: Add test cases.
-	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		err := bucketInit(tx, "")
+		if err != nil {
+			return err
+		}
+		b, err := openBucket(tx, "")
+		if err != nil {
+			return err
+		}
+		f := newFsBucket(b)
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+		// Test Put and Get
+		testKey := "testkey"
+		testData := []byte("test value")
 
-			err := test.f.Put(test.args.key, test.args.data)
-			if err != nil {
-				t.Error(err)
-			}
+		err = f.Put(testKey, testData)
+		if err != nil {
+			t.Errorf("Put() error = %v", err)
+			return err
+		}
 
-			got, err := test.f.Get(test.args.key)
-			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.Put() error = %v, wantErr %v", err, test.wantErr)
-			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("fsBucket.Get() = %v, want %v", got, test.want)
-			}
-		})
+		got, err := f.Get(testKey)
+		if err != nil {
+			t.Errorf("Get() error = %v", err)
+			return err
+		}
+
+		if !reflect.DeepEqual(got, testData) {
+			t.Errorf("Get() = %v, want %v", got, testData)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }
 
 func Test_fsBucket_SymlinkReadlink(t *testing.T) {
-	type args struct {
-		ino  uint64
-		path string
+	testfile := "SymlinkReadlink_test.db"
+	db, err := bolt.Open(testfile, 0644, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	tests := []struct {
-		name    string
-		f       *fsBucket
-		args    args
-		want    string
-		wantErr bool
-	}{
-	// TODO: Add test cases.
-	}
+	defer func() {
+		db.Close()
+		os.Remove(testfile)
+	}()
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	err = db.Update(func(tx *bolt.Tx) error {
+		err := bucketInit(tx, "")
+		if err != nil {
+			return err
+		}
+		b, err := openBucket(tx, "")
+		if err != nil {
+			return err
+		}
+		f := newFsBucket(b)
 
-			err := test.f.Symlink(test.args.ino, test.args.path)
-			if (err != nil) != test.wantErr {
-				t.Errorf("fsBucket.Symlink() error = %v, wantErr %v", err, test.wantErr)
-			}
+		// Test Symlink and Readlink
+		testIno := uint64(123)
+		testPath := "/path/to/target"
 
-			got := test.f.Readlink(test.args.ino)
-			if got != test.want {
-				t.Errorf("fsBucket.Readlink() = %v, want %v", got, test.want)
-			}
-		})
+		err = f.Symlink(testIno, testPath)
+		if err != nil {
+			t.Errorf("Symlink() error = %v", err)
+			return err
+		}
+
+		got := f.Readlink(testIno)
+		if got != testPath {
+			t.Errorf("Readlink() = %v, want %v", got, testPath)
+		}
+
+		// Test reading non-existent symlink
+		emptyPath := f.Readlink(999)
+		if emptyPath != "" {
+			t.Errorf("Readlink(999) = %v, want empty string", emptyPath)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }
