@@ -11,7 +11,6 @@ library package, even including support for symbolic links.
 - Walk method like `filepath.Walk`
 - **Thread-safe in-memory inode cache** for improved performance
 - **Snapshot support** using BoltDB's MVCC for point-in-time filesystem views
-- **FUSE interface framework** for mounting as a real filesystem (requires FUSE library)
 - Extensive tests with >90% coverage
 
 ### Inode Cache
@@ -60,25 +59,13 @@ sm.Create("daily-backup")
 snap, _ := sm.Get("daily-backup")
 ```
 
-### FUSE Support
-
-Framework for mounting boltfs as a real filesystem:
-
-```go
-fuse := fs.NewFUSEServer("/mnt/boltfs")
-
-// Note: Requires a FUSE library like:
-// - bazil.org/fuse
-// - github.com/hanwen/go-fuse
-```
-
 ## Coming soon
 
 - Improved test coverage
 - Error for error match to `os` package implementations
 - FastWalk high performance walker (non sorted, os.FileMode only)
 - Support for storing file content externally
-- Complete FUSE implementation with library integration
+- FUSE mounting support via separate absfs-compatible package
 
 ## License
 
