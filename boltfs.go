@@ -22,11 +22,12 @@ var errNoData = errors.New("no data")
 
 // FileSystem implements absfs.FileSystem for the boltdb packages `github.com/coreos/bbolt`.
 type FileSystem struct {
-	db      *bolt.DB
-	bucket  string
-	rootIno uint64
-	cwd     string
-	cache   *inodeCache
+	db           *bolt.DB
+	bucket       string
+	rootIno      uint64
+	cwd          string
+	cache        *inodeCache
+	contentStore ContentStore
 
 	// symlinks map[uint64]string
 }
@@ -48,11 +49,12 @@ func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 	// load or initialize
 	rootIno := uint64(1)
 	fs := &FileSystem{
-		db:      db,
-		bucket:  bucketpath,
-		rootIno: rootIno,
-		cwd:     "/",
-		cache:   newInodeCache(1000), // Default cache size of 1000 inodes
+		db:           db,
+		bucket:       bucketpath,
+		rootIno:      rootIno,
+		cwd:          "/",
+		cache:        newInodeCache(1000), // Default cache size of 1000 inodes
+		contentStore: NewBoltContentStore(db),
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
 		bb, err := openBucket(tx, bucketpath)
@@ -130,11 +132,12 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 	rootIno := uint64(1)
 
 	fs := &FileSystem{
-		db:      db,
-		bucket:  bucketpath,
-		rootIno: rootIno,
-		cwd:     "/",
-		cache:   newInodeCache(1000), // Default cache size of 1000 inodes
+		db:           db,
+		bucket:       bucketpath,
+		rootIno:      rootIno,
+		cwd:          "/",
+		cache:        newInodeCache(1000), // Default cache size of 1000 inodes
+		contentStore: NewBoltContentStore(db),
 	}
 
 	err = db.Update(func(tx *bolt.Tx) error {
@@ -171,9 +174,43 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 	return fs, nil
 }
 
-// Close waits for pending writes, then closes the database file.
+// Close waits for pending writes, then closes the database file and content store.
 func (fs *FileSystem) Close() error {
+	if fs.contentStore != nil {
+		if err := fs.contentStore.Close(); err != nil {
+			return err
+		}
+	}
 	return fs.db.Close()
+}
+
+// SetContentStore sets a custom content store for the filesystem.
+// This allows file content to be stored externally (e.g., in a filesystem, S3, etc.)
+// instead of in BoltDB. This should be called before any file operations.
+func (fs *FileSystem) SetContentStore(store ContentStore) {
+	fs.contentStore = store
+}
+
+// NewFSWithContentStore creates a new FileSystem with a custom content store.
+// This is useful for storing file content externally while keeping metadata in BoltDB.
+func NewFSWithContentStore(db *bolt.DB, bucketpath string, store ContentStore) (*FileSystem, error) {
+	fs, err := NewFS(db, bucketpath)
+	if err != nil {
+		return nil, err
+	}
+	fs.contentStore = store
+	return fs, nil
+}
+
+// OpenWithContentStore opens a BoltDB filesystem with a custom content store.
+// This is useful for storing file content externally while keeping metadata in BoltDB.
+func OpenWithContentStore(path, bucketpath string, store ContentStore) (*FileSystem, error) {
+	fs, err := Open(path, bucketpath)
+	if err != nil {
+		return nil, err
+	}
+	fs.contentStore = store
+	return fs, nil
 }
 
 // openFsBucket opens the filesystem buckets at the configured bucket path.
@@ -351,6 +388,11 @@ func (fs *FileSystem) saveData(ino uint64, data []byte) error {
 		return errNilIno
 	}
 
+	// Use content store if available, otherwise fall back to BoltDB data bucket
+	if fs.contentStore != nil {
+		return fs.contentStore.Put(ino, data)
+	}
+
 	return fs.db.Update(func(tx *bolt.Tx) error {
 		b, err := fs.openFsBucket(tx)
 		if err != nil {
@@ -364,6 +406,18 @@ func (fs *FileSystem) saveData(ino uint64, data []byte) error {
 func (fs *FileSystem) loadData(ino uint64) ([]byte, error) {
 	if ino == 0 {
 		return nil, errNilIno
+	}
+
+	// Use content store if available, otherwise fall back to BoltDB data bucket
+	if fs.contentStore != nil {
+		data, err := fs.contentStore.Get(ino)
+		if err != nil {
+			return nil, err
+		}
+		if data == nil {
+			return []byte{}, nil
+		}
+		return data, nil
 	}
 
 	var data []byte
@@ -841,6 +895,13 @@ func (fs *FileSystem) saveParentChild(parent *iNode, filename string, child *iNo
 }
 
 func (fs *FileSystem) deleteInode(ino uint64) error {
+	// Delete from content store first
+	if fs.contentStore != nil {
+		if err := fs.contentStore.Delete(ino); err != nil {
+			return err
+		}
+	}
+
 	err := fs.db.Update(func(tx *bolt.Tx) error {
 		b, err := fs.openFsBucket(tx)
 		if err != nil {
@@ -851,7 +912,10 @@ func (fs *FileSystem) deleteInode(ino uint64) error {
 		if err != nil {
 			return err
 		}
-		b.data.Delete(key)
+		// Only delete from data bucket if no content store is configured
+		if fs.contentStore == nil {
+			b.data.Delete(key)
+		}
 		return nil
 	})
 	if err != nil {
@@ -1034,6 +1098,18 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		inos[i], inos[j] = inos[j], inos[i]
 	}
 
+	// Delete content from content store first
+	if fs.contentStore != nil {
+		for _, ino := range inos {
+			if rootid != 0 && ino == rootid {
+				continue
+			}
+			if err := fs.contentStore.Delete(ino); err != nil {
+				return err
+			}
+		}
+	}
+
 	err = fs.db.Update(func(tx *bolt.Tx) error {
 		b, err := fs.openFsBucket(tx)
 		if err != nil {
@@ -1049,9 +1125,12 @@ func (fs *FileSystem) RemoveAll(name string) error {
 			if err != nil {
 				return err
 			}
-			err = b.data.Delete(key)
-			if err != nil {
-				return err
+			// Only delete from data bucket if no content store is configured
+			if fs.contentStore == nil {
+				err = b.data.Delete(key)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -1060,12 +1139,28 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		return err
 	}
 
-	if child == nil {
-		parent.Children = parent.Children[:0]
+	// Remove the entry from parent's children if child exists
+	if child != nil && parent != nil {
+		// Remove child from parent's Children list
+		for i, entry := range parent.Children {
+			if entry.Ino == child.Ino {
+				parent.Children = append(parent.Children[:i], parent.Children[i+1:]...)
+				break
+			}
+		}
+		// Invalidate cache entries for parent and child
+		if fs.cache != nil {
+			fs.cache.Invalidate(parent.Ino)
+			fs.cache.Invalidate(child.Ino)
+		}
 		fs.saveInode(parent)
-	} else {
-		child.Children = child.Children[:0]
-		fs.saveInode(child)
+	} else if child == nil && parent != nil {
+		// Removing all children from parent
+		parent.Children = parent.Children[:0]
+		if fs.cache != nil {
+			fs.cache.Invalidate(parent.Ino)
+		}
+		fs.saveInode(parent)
 	}
 
 	return nil
