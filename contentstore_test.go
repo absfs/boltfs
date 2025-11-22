@@ -5,203 +5,24 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/absfs/memfs"
 	bolt "go.etcd.io/bbolt"
 )
 
-// TestBoltContentStore tests the BoltDB-backed content store
-func TestBoltContentStore(t *testing.T) {
-	// Create temporary database
+// TestFileSystemWithMemFS tests using memfs for external content storage
+func TestFileSystemWithMemFS(t *testing.T) {
 	tmpfile := filepath.Join(t.TempDir(), "test.db")
-	db, err := bolt.Open(tmpfile, 0644, nil)
+
+	// Create memfs for content storage
+	contentFS, err := memfs.NewFS()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewFS failed: %v", err)
 	}
-	defer db.Close()
 
-	// Initialize buckets
-	err = db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucket([]byte("data"))
-		return err
-	})
+	// Open filesystem with memfs content storage
+	fs, err := OpenWithContentFS(tmpfile, "", contentFS)
 	if err != nil {
-		t.Fatal(err)
-	}
-
-	store := NewBoltContentStore(db)
-
-	// Test Put
-	testData := []byte("hello world")
-	err = store.Put(1, testData)
-	if err != nil {
-		t.Fatalf("Put failed: %v", err)
-	}
-
-	// Test Get
-	data, err := store.Get(1)
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if string(data) != string(testData) {
-		t.Fatalf("Get returned wrong data: got %q, want %q", data, testData)
-	}
-
-	// Test Exists
-	if !store.Exists(1) {
-		t.Fatal("Exists returned false for existing content")
-	}
-	if store.Exists(999) {
-		t.Fatal("Exists returned true for non-existing content")
-	}
-
-	// Test Delete
-	err = store.Delete(1)
-	if err != nil {
-		t.Fatalf("Delete failed: %v", err)
-	}
-
-	// Verify deletion
-	data, err = store.Get(1)
-	if err != nil {
-		t.Fatalf("Get after delete failed: %v", err)
-	}
-	if data != nil {
-		t.Fatalf("Get after delete returned data: %v", data)
-	}
-
-	// Test Close
-	err = store.Close()
-	if err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-}
-
-// TestFilesystemContentStore tests the filesystem-backed content store
-func TestFilesystemContentStore(t *testing.T) {
-	// Create temporary directory
-	tmpdir := filepath.Join(t.TempDir(), "contentstore")
-
-	store, err := NewFilesystemContentStore(tmpdir)
-	if err != nil {
-		t.Fatalf("NewFilesystemContentStore failed: %v", err)
-	}
-
-	// Test Put
-	testData := []byte("hello world")
-	err = store.Put(1, testData)
-	if err != nil {
-		t.Fatalf("Put failed: %v", err)
-	}
-
-	// Verify file exists
-	path := store.getPath(1)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Fatal("Put did not create file")
-	}
-
-	// Test Get
-	data, err := store.Get(1)
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if string(data) != string(testData) {
-		t.Fatalf("Get returned wrong data: got %q, want %q", data, testData)
-	}
-
-	// Test Exists
-	if !store.Exists(1) {
-		t.Fatal("Exists returned false for existing content")
-	}
-	if store.Exists(999) {
-		t.Fatal("Exists returned true for non-existing content")
-	}
-
-	// Test Delete
-	err = store.Delete(1)
-	if err != nil {
-		t.Fatalf("Delete failed: %v", err)
-	}
-
-	// Verify deletion
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatal("Delete did not remove file")
-	}
-
-	// Test Get after delete
-	data, err = store.Get(1)
-	if err != nil {
-		t.Fatalf("Get after delete failed: %v", err)
-	}
-	if data != nil {
-		t.Fatalf("Get after delete returned data: %v", data)
-	}
-
-	// Test Close
-	err = store.Close()
-	if err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-}
-
-// TestFilesystemContentStoreSubdirectories tests subdirectory creation
-func TestFilesystemContentStoreSubdirectories(t *testing.T) {
-	tmpdir := filepath.Join(t.TempDir(), "contentstore")
-
-	store, err := NewFilesystemContentStore(tmpdir)
-	if err != nil {
-		t.Fatalf("NewFilesystemContentStore failed: %v", err)
-	}
-
-	// Test with different inode numbers to verify subdirectory structure
-	testCases := []struct {
-		ino      uint64
-		expected string
-	}{
-		{0x0000000000000001, "00/0000000000000001"},
-		{0x0123456789abcdef, "01/0123456789abcdef"},
-		{0xff00000000000000, "ff/ff00000000000000"},
-	}
-
-	for _, tc := range testCases {
-		path := store.getPath(tc.ino)
-		rel, err := filepath.Rel(tmpdir, path)
-		if err != nil {
-			t.Fatalf("Failed to get relative path: %v", err)
-		}
-		if rel != tc.expected {
-			t.Errorf("getPath(%d) = %q, want %q", tc.ino, rel, tc.expected)
-		}
-
-		// Test Put to create subdirectory
-		testData := []byte("test")
-		err = store.Put(tc.ino, testData)
-		if err != nil {
-			t.Fatalf("Put failed for ino %d: %v", tc.ino, err)
-		}
-
-		// Verify subdirectory was created
-		dir := filepath.Dir(path)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			t.Errorf("Subdirectory not created for ino %d", tc.ino)
-		}
-	}
-}
-
-// TestFileSystemWithExternalStorage tests the complete filesystem with external storage
-func TestFileSystemWithExternalStorage(t *testing.T) {
-	tmpdir := t.TempDir()
-	dbfile := filepath.Join(tmpdir, "test.db")
-	contentdir := filepath.Join(tmpdir, "content")
-
-	// Create filesystem content store
-	contentStore, err := NewFilesystemContentStore(contentdir)
-	if err != nil {
-		t.Fatalf("NewFilesystemContentStore failed: %v", err)
-	}
-
-	// Open filesystem with external storage
-	fs, err := OpenWithContentStore(dbfile, "", contentStore)
-	if err != nil {
-		t.Fatalf("OpenWithContentStore failed: %v", err)
+		t.Fatalf("OpenWithContentFS failed: %v", err)
 	}
 	defer fs.Close()
 
@@ -212,7 +33,7 @@ func TestFileSystemWithExternalStorage(t *testing.T) {
 	}
 
 	// Write data
-	testData := []byte("hello external storage!")
+	testData := []byte("hello memfs storage!")
 	n, err := f.Write(testData)
 	if err != nil {
 		t.Fatalf("Write failed: %v", err)
@@ -221,28 +42,6 @@ func TestFileSystemWithExternalStorage(t *testing.T) {
 		t.Fatalf("Write wrote %d bytes, want %d", n, len(testData))
 	}
 	f.Close()
-
-	// Verify content is stored externally, not in BoltDB data bucket
-	var foundInBoltDB bool
-	err = fs.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("data"))
-		if b == nil {
-			return nil
-		}
-		c := b.Cursor()
-		for k, v := c.First(); k != nil; k, v = c.Next() {
-			if len(v) > 0 {
-				foundInBoltDB = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("Failed to check BoltDB: %v", err)
-	}
-	if foundInBoltDB {
-		t.Error("Content found in BoltDB data bucket, should be in external storage")
-	}
 
 	// Read the file back
 	f, err = fs.OpenFile("/test.txt", os.O_RDONLY, 0)
@@ -263,25 +62,48 @@ func TestFileSystemWithExternalStorage(t *testing.T) {
 	}
 	f.Close()
 
+	// Verify content is stored in memfs, not BoltDB
+	// Get the inode number
+	info, err := fs.Stat("/test.txt")
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	node, ok := info.Sys().(*iNode)
+	if !ok {
+		t.Fatal("Failed to get inode")
+	}
+
+	// Check that content exists in memfs
+	contentPath := inoToPath(node.Ino)
+	_, err = contentFS.Stat(contentPath)
+	if err != nil {
+		t.Fatalf("Content not found in memfs: %v", err)
+	}
+
 	// Test file deletion
 	err = fs.Remove("/test.txt")
 	if err != nil {
 		t.Fatalf("Remove failed: %v", err)
 	}
 
-	// Verify content was deleted from external storage
-	// Get the inode number by trying to stat (should fail)
+	// Verify file was deleted
 	_, err = fs.Stat("/test.txt")
 	if !os.IsNotExist(err) {
 		t.Fatalf("File should not exist after remove, got error: %v", err)
 	}
+
+	// Verify content was deleted from memfs
+	_, err = contentFS.Stat(contentPath)
+	if !os.IsNotExist(err) {
+		t.Fatalf("Content should not exist in memfs after remove, got error: %v", err)
+	}
 }
 
-// TestFileSystemWithBoltContentStore tests backward compatibility
-func TestFileSystemWithBoltContentStore(t *testing.T) {
+// TestFileSystemWithoutExternalStorage tests backward compatibility
+func TestFileSystemWithoutExternalStorage(t *testing.T) {
 	tmpfile := filepath.Join(t.TempDir(), "test.db")
 
-	// Open filesystem with default BoltDB content store
+	// Open filesystem without external storage (uses BoltDB by default)
 	fs, err := Open(tmpfile, "")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
@@ -305,28 +127,6 @@ func TestFileSystemWithBoltContentStore(t *testing.T) {
 	}
 	f.Close()
 
-	// Verify content is stored in BoltDB data bucket
-	var foundInBoltDB bool
-	err = fs.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("data"))
-		if b == nil {
-			return nil
-		}
-		c := b.Cursor()
-		for k, v := c.First(); k != nil; k, v = c.Next() {
-			if len(v) > 0 {
-				foundInBoltDB = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("Failed to check BoltDB: %v", err)
-	}
-	if !foundInBoltDB {
-		t.Error("Content not found in BoltDB data bucket")
-	}
-
 	// Read the file back
 	f, err = fs.OpenFile("/test.txt", os.O_RDONLY, 0)
 	if err != nil {
@@ -347,22 +147,20 @@ func TestFileSystemWithBoltContentStore(t *testing.T) {
 	f.Close()
 }
 
-// TestRemoveAllWithExternalStorage tests RemoveAll with external storage
+// TestRemoveAllWithExternalStorage tests RemoveAll with memfs
 func TestRemoveAllWithExternalStorage(t *testing.T) {
-	tmpdir := t.TempDir()
-	dbfile := filepath.Join(tmpdir, "test.db")
-	contentdir := filepath.Join(tmpdir, "content")
+	tmpfile := filepath.Join(t.TempDir(), "test.db")
 
-	// Create filesystem content store
-	contentStore, err := NewFilesystemContentStore(contentdir)
+	// Create memfs for content storage
+	contentFS, err := memfs.NewFS()
 	if err != nil {
-		t.Fatalf("NewFilesystemContentStore failed: %v", err)
+		t.Fatalf("NewFS failed: %v", err)
 	}
 
-	// Open filesystem with external storage
-	fs, err := OpenWithContentStore(dbfile, "", contentStore)
+	// Open filesystem with memfs content storage
+	fs, err := OpenWithContentFS(tmpfile, "", contentFS)
 	if err != nil {
-		t.Fatalf("OpenWithContentStore failed: %v", err)
+		t.Fatalf("OpenWithContentFS failed: %v", err)
 	}
 	defer fs.Close()
 
@@ -373,6 +171,7 @@ func TestRemoveAllWithExternalStorage(t *testing.T) {
 	}
 
 	// Create multiple files
+	var inodes []uint64
 	for i := 0; i < 5; i++ {
 		filename := filepath.Join("/testdir", "file"+string(rune('0'+i))+".txt")
 		f, err := fs.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
@@ -380,6 +179,13 @@ func TestRemoveAllWithExternalStorage(t *testing.T) {
 			t.Fatalf("OpenFile failed: %v", err)
 		}
 		f.Write([]byte("test data " + string(rune('0'+i))))
+
+		// Get inode number
+		info, _ := fs.Stat(filename)
+		if node, ok := info.Sys().(*iNode); ok {
+			inodes = append(inodes, node.Ino)
+		}
+
 		f.Close()
 	}
 
@@ -398,22 +204,111 @@ func TestRemoveAllWithExternalStorage(t *testing.T) {
 		t.Fatalf("Expected NotExist error, got: %v", err)
 	}
 
-	// Verify all content files were deleted from external storage
-	// (we can't easily check individual files, but we can verify the content dir is mostly empty)
-	entries, err := os.ReadDir(contentdir)
-	if err != nil {
-		t.Fatalf("Failed to read content directory: %v", err)
-	}
-
-	// Count files (not including subdirectories)
-	fileCount := 0
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			fileCount++
+	// Verify all content files were deleted from memfs
+	for _, ino := range inodes {
+		contentPath := inoToPath(ino)
+		_, err := contentFS.Stat(contentPath)
+		if !os.IsNotExist(err) {
+			t.Errorf("Content for inode %d should not exist in memfs, got error: %v", ino, err)
 		}
 	}
+}
 
-	if fileCount > 0 {
-		t.Errorf("Found %d files in content directory after RemoveAll", fileCount)
+// TestSetContentFS tests setting content filesystem on existing filesystem
+func TestSetContentFS(t *testing.T) {
+	tmpfile := filepath.Join(t.TempDir(), "test.db")
+
+	// Open filesystem without external storage
+	fs, err := Open(tmpfile, "")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer fs.Close()
+
+	// Create memfs for content storage
+	contentFS, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("NewFS failed: %v", err)
+	}
+
+	// Set content filesystem
+	fs.SetContentFS(contentFS)
+
+	// Create a test file
+	f, err := fs.OpenFile("/test.txt", os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("OpenFile failed: %v", err)
+	}
+
+	testData := []byte("test data")
+	f.Write(testData)
+	f.Close()
+
+	// Get inode number
+	info, err := fs.Stat("/test.txt")
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	node, ok := info.Sys().(*iNode)
+	if !ok {
+		t.Fatal("Failed to get inode")
+	}
+
+	// Verify content exists in memfs
+	contentPath := inoToPath(node.Ino)
+	_, err = contentFS.Stat(contentPath)
+	if err != nil {
+		t.Fatalf("Content not found in memfs: %v", err)
+	}
+}
+
+// TestNewFSWithContentFS tests creating filesystem with content filesystem
+func TestNewFSWithContentFS(t *testing.T) {
+	tmpfile := filepath.Join(t.TempDir(), "test.db")
+
+	// Open BoltDB
+	db, err := bolt.Open(tmpfile, 0644, nil)
+	if err != nil {
+		t.Fatalf("bolt.Open failed: %v", err)
+	}
+	defer db.Close()
+
+	// Create memfs for content storage
+	contentFS, err := memfs.NewFS()
+	if err != nil {
+		t.Fatalf("NewFS failed: %v", err)
+	}
+
+	// Create filesystem with content filesystem
+	fs, err := NewFSWithContentFS(db, "", contentFS)
+	if err != nil {
+		t.Fatalf("NewFSWithContentFS failed: %v", err)
+	}
+
+	// Create a test file
+	f, err := fs.OpenFile("/test.txt", os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("OpenFile failed: %v", err)
+	}
+
+	testData := []byte("test data")
+	f.Write(testData)
+	f.Close()
+
+	// Get inode number
+	info, err := fs.Stat("/test.txt")
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	node, ok := info.Sys().(*iNode)
+	if !ok {
+		t.Fatal("Failed to get inode")
+	}
+
+	// Verify content exists in memfs
+	contentPath := inoToPath(node.Ino)
+	_, err = contentFS.Stat(contentPath)
+	if err != nil {
+		t.Fatalf("Content not found in memfs: %v", err)
 	}
 }

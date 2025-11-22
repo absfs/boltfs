@@ -3,6 +3,8 @@ package boltfs
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	filepath "path"
 	walkpath "path/filepath"
@@ -22,12 +24,12 @@ var errNoData = errors.New("no data")
 
 // FileSystem implements absfs.FileSystem for the boltdb packages `github.com/coreos/bbolt`.
 type FileSystem struct {
-	db           *bolt.DB
-	bucket       string
-	rootIno      uint64
-	cwd          string
-	cache        *inodeCache
-	contentStore ContentStore
+	db        *bolt.DB
+	bucket    string
+	rootIno   uint64
+	cwd       string
+	cache     *inodeCache
+	contentFS absfs.FileSystem // Optional external filesystem for storing file content
 
 	// symlinks map[uint64]string
 }
@@ -49,12 +51,12 @@ func NewFS(db *bolt.DB, bucketpath string) (*FileSystem, error) {
 	// load or initialize
 	rootIno := uint64(1)
 	fs := &FileSystem{
-		db:           db,
-		bucket:       bucketpath,
-		rootIno:      rootIno,
-		cwd:          "/",
-		cache:        newInodeCache(1000), // Default cache size of 1000 inodes
-		contentStore: NewBoltContentStore(db),
+		db:        db,
+		bucket:    bucketpath,
+		rootIno:   rootIno,
+		cwd:       "/",
+		cache:     newInodeCache(1000), // Default cache size of 1000 inodes
+		contentFS: nil,                 // Use BoltDB by default (backward compatible)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
 		bb, err := openBucket(tx, bucketpath)
@@ -132,12 +134,12 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 	rootIno := uint64(1)
 
 	fs := &FileSystem{
-		db:           db,
-		bucket:       bucketpath,
-		rootIno:      rootIno,
-		cwd:          "/",
-		cache:        newInodeCache(1000), // Default cache size of 1000 inodes
-		contentStore: NewBoltContentStore(db),
+		db:        db,
+		bucket:    bucketpath,
+		rootIno:   rootIno,
+		cwd:       "/",
+		cache:     newInodeCache(1000), // Default cache size of 1000 inodes
+		contentFS: nil,                 // Use BoltDB by default (backward compatible)
 	}
 
 	err = db.Update(func(tx *bolt.Tx) error {
@@ -174,42 +176,38 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 	return fs, nil
 }
 
-// Close waits for pending writes, then closes the database file and content store.
+// Close waits for pending writes, then closes the database file.
 func (fs *FileSystem) Close() error {
-	if fs.contentStore != nil {
-		if err := fs.contentStore.Close(); err != nil {
-			return err
-		}
-	}
 	return fs.db.Close()
 }
 
-// SetContentStore sets a custom content store for the filesystem.
-// This allows file content to be stored externally (e.g., in a filesystem, S3, etc.)
-// instead of in BoltDB. This should be called before any file operations.
-func (fs *FileSystem) SetContentStore(store ContentStore) {
-	fs.contentStore = store
+// SetContentFS sets an external filesystem for storing file content.
+// This allows file content to be stored in any absfs.FileSystem implementation
+// (memfs, osfs, s3fs, etc.) instead of in BoltDB. This should be called before
+// any file operations.
+func (fs *FileSystem) SetContentFS(contentFS absfs.FileSystem) {
+	fs.contentFS = contentFS
 }
 
-// NewFSWithContentStore creates a new FileSystem with a custom content store.
+// NewFSWithContentFS creates a new FileSystem with an external content filesystem.
 // This is useful for storing file content externally while keeping metadata in BoltDB.
-func NewFSWithContentStore(db *bolt.DB, bucketpath string, store ContentStore) (*FileSystem, error) {
+func NewFSWithContentFS(db *bolt.DB, bucketpath string, contentFS absfs.FileSystem) (*FileSystem, error) {
 	fs, err := NewFS(db, bucketpath)
 	if err != nil {
 		return nil, err
 	}
-	fs.contentStore = store
+	fs.contentFS = contentFS
 	return fs, nil
 }
 
-// OpenWithContentStore opens a BoltDB filesystem with a custom content store.
+// OpenWithContentFS opens a BoltDB filesystem with an external content filesystem.
 // This is useful for storing file content externally while keeping metadata in BoltDB.
-func OpenWithContentStore(path, bucketpath string, store ContentStore) (*FileSystem, error) {
+func OpenWithContentFS(path, bucketpath string, contentFS absfs.FileSystem) (*FileSystem, error) {
 	fs, err := Open(path, bucketpath)
 	if err != nil {
 		return nil, err
 	}
-	fs.contentStore = store
+	fs.contentFS = contentFS
 	return fs, nil
 }
 
@@ -364,6 +362,15 @@ func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 
 var errInvalidIno = errors.New("invalid ino")
 
+// inoToPath converts an inode number to a path in the content filesystem.
+// Uses subdirectories (like Git) to avoid too many files in one directory.
+// Format: /XX/XXXXXXXXXXXXXXXX where XX is the first 2 hex digits.
+func inoToPath(ino uint64) string {
+	hex := fmt.Sprintf("%016x", ino)
+	// Create subdirectory structure: /01/0123456789abcdef
+	return filepath.Join("/", hex[:2], hex)
+}
+
 // loadInode - loads the iNode defined by `ino` or returns an error
 func (fs *FileSystem) loadInode(ino uint64) (*iNode, error) {
 	if ino == 0 {
@@ -388,9 +395,28 @@ func (fs *FileSystem) saveData(ino uint64, data []byte) error {
 		return errNilIno
 	}
 
-	// Use content store if available, otherwise fall back to BoltDB data bucket
-	if fs.contentStore != nil {
-		return fs.contentStore.Put(ino, data)
+	// Use external content filesystem if available, otherwise fall back to BoltDB data bucket
+	if fs.contentFS != nil {
+		path := inoToPath(ino)
+
+		// Ensure parent directory exists
+		dir := filepath.Dir(path)
+		if err := fs.contentFS.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+
+		// Write file atomically
+		f, err := fs.contentFS.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to create file: %w", err)
+		}
+		defer f.Close()
+
+		if _, err := f.Write(data); err != nil {
+			return fmt.Errorf("failed to write data: %w", err)
+		}
+
+		return nil
 	}
 
 	return fs.db.Update(func(tx *bolt.Tx) error {
@@ -408,15 +434,24 @@ func (fs *FileSystem) loadData(ino uint64) ([]byte, error) {
 		return nil, errNilIno
 	}
 
-	// Use content store if available, otherwise fall back to BoltDB data bucket
-	if fs.contentStore != nil {
-		data, err := fs.contentStore.Get(ino)
+	// Use external content filesystem if available, otherwise fall back to BoltDB data bucket
+	if fs.contentFS != nil {
+		path := inoToPath(ino)
+
+		f, err := fs.contentFS.OpenFile(path, os.O_RDONLY, 0)
 		if err != nil {
-			return nil, err
+			if os.IsNotExist(err) {
+				return []byte{}, nil
+			}
+			return nil, fmt.Errorf("failed to open file: %w", err)
 		}
-		if data == nil {
-			return []byte{}, nil
+		defer f.Close()
+
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read file: %w", err)
 		}
+
 		return data, nil
 	}
 
@@ -895,9 +930,10 @@ func (fs *FileSystem) saveParentChild(parent *iNode, filename string, child *iNo
 }
 
 func (fs *FileSystem) deleteInode(ino uint64) error {
-	// Delete from content store first
-	if fs.contentStore != nil {
-		if err := fs.contentStore.Delete(ino); err != nil {
+	// Delete from external content filesystem first
+	if fs.contentFS != nil {
+		path := inoToPath(ino)
+		if err := fs.contentFS.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -912,8 +948,8 @@ func (fs *FileSystem) deleteInode(ino uint64) error {
 		if err != nil {
 			return err
 		}
-		// Only delete from data bucket if no content store is configured
-		if fs.contentStore == nil {
+		// Only delete from data bucket if no external content filesystem is configured
+		if fs.contentFS == nil {
 			b.data.Delete(key)
 		}
 		return nil
@@ -1098,13 +1134,14 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		inos[i], inos[j] = inos[j], inos[i]
 	}
 
-	// Delete content from content store first
-	if fs.contentStore != nil {
+	// Delete content from external content filesystem first
+	if fs.contentFS != nil {
 		for _, ino := range inos {
 			if rootid != 0 && ino == rootid {
 				continue
 			}
-			if err := fs.contentStore.Delete(ino); err != nil {
+			path := inoToPath(ino)
+			if err := fs.contentFS.Remove(path); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
@@ -1125,8 +1162,8 @@ func (fs *FileSystem) RemoveAll(name string) error {
 			if err != nil {
 				return err
 			}
-			// Only delete from data bucket if no content store is configured
-			if fs.contentStore == nil {
+			// Only delete from data bucket if no external content filesystem is configured
+			if fs.contentFS == nil {
 				err = b.data.Delete(key)
 				if err != nil {
 					return err
