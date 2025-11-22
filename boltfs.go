@@ -129,11 +129,22 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 	// load or initialize
 	rootIno := uint64(1)
 
+	fs := &FileSystem{
+		db:      db,
+		bucket:  bucketpath,
+		rootIno: rootIno,
+		cwd:     "/",
+		cache:   newInodeCache(1000), // Default cache size of 1000 inodes
+	}
+
 	err = db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 
 		// create the `nil` node if it doesn't exist
-		err := b.InodeInit()
+		err = b.InodeInit()
 		if err != nil {
 			return err
 		}
@@ -156,20 +167,33 @@ func Open(path, bucketpath string) (*FileSystem, error) {
 		return nil, err
 	}
 
-	fs := &FileSystem{
-		db:      db,
-		bucket:  bucketpath,
-		rootIno: rootIno,
-		cwd:     "/",
-		cache:   newInodeCache(1000), // Default cache size of 1000 inodes
-	}
-
+	fs.rootIno = rootIno
 	return fs, nil
 }
 
 // Close waits for pending writes, then closes the database file.
 func (fs *FileSystem) Close() error {
 	return fs.db.Close()
+}
+
+// openFsBucket opens the filesystem buckets at the configured bucket path.
+// This ensures proper bucket isolation when a non-empty bucket path is configured.
+func (fs *FileSystem) openFsBucket(tx *bolt.Tx) (*fsBucket, error) {
+	bb, err := openBucket(tx, fs.bucket)
+	if err != nil {
+		return nil, err
+	}
+	return newFsBucket(bb), nil
+}
+
+// openFsBucketWithCache opens the filesystem buckets with cache support.
+// This ensures proper bucket isolation when a non-empty bucket path is configured.
+func (fs *FileSystem) openFsBucketWithCache(tx *bolt.Tx) (*fsBucket, error) {
+	bb, err := openBucket(tx, fs.bucket)
+	if err != nil {
+		return nil, err
+	}
+	return newFsBucketWithCache(bb, fs.cache), nil
 }
 
 // CacheStats returns statistics about the inode cache.
@@ -200,7 +224,10 @@ func (fs *FileSystem) SetCacheSize(size int) {
 func (fs *FileSystem) Umask() os.FileMode {
 	var umask os.FileMode
 	err := fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 		data, err := b.Get("umask")
 		if err != nil {
 			return err
@@ -221,7 +248,10 @@ func (fs *FileSystem) SetUmask(umask os.FileMode) {
 	var data [4]byte
 
 	err := fs.db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 
 		binary.BigEndian.PutUint32(data[:], uint32(umask))
 		return b.Put("umask", data[:])
@@ -239,13 +269,16 @@ func (fs *FileSystem) TempDir() string {
 	var tempdir string
 	tempdir = "/tmp"
 	err := fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("state"))
-		data := b.Get([]byte("tempdir"))
-		if data != nil {
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
+		data, err := b.Get("tempdir")
+		if err == nil && data != nil {
 			tempdir = string(data)
 			return nil
 		}
-		return b.Put([]byte("tempdir"), []byte(tempdir))
+		return b.Put("tempdir", []byte(tempdir))
 	})
 	if err != nil {
 		// Return default temp directory on error instead of panicking
@@ -260,8 +293,11 @@ func (fs *FileSystem) TempDir() string {
 func (fs *FileSystem) SetTempdir(tempdir string) {
 	// Ignore the error to maintain backwards compatibility
 	_ = fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("state"))
-		return b.Put([]byte("tempdir"), []byte(tempdir))
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
+		return b.Put("tempdir", []byte(tempdir))
 	})
 }
 
@@ -272,13 +308,14 @@ func (fs *FileSystem) SetTempdir(tempdir string) {
 func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 	ino = node.Ino
 	err = fs.db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b, err := fs.openFsBucketWithCache(tx)
+		if err != nil {
+			return err
+		}
 
-		// b := tx.Bucket([]byte("inodes"))
 		if ino == 0 {
 			ino, err = b.NextInode()
 		}
-		// ino, err = b.NextSequence()
 		if err != nil {
 			return err
 		}
@@ -298,7 +335,11 @@ func (fs *FileSystem) loadInode(ino uint64) (*iNode, error) {
 
 	node := new(iNode)
 	err := fs.db.View(func(tx *bolt.Tx) error {
-		return decodeNode(tx.Bucket([]byte("inodes")), ino, node)
+		b, err := fs.openFsBucketWithCache(tx)
+		if err != nil {
+			return err
+		}
+		return decodeNode(b.inodes, ino, node)
 	})
 
 	return node, err
@@ -311,8 +352,11 @@ func (fs *FileSystem) saveData(ino uint64, data []byte) error {
 	}
 
 	return fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("data"))
-		return b.Put(i2b(ino), data)
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
+		return b.data.Put(i2b(ino), data)
 	})
 }
 
@@ -324,8 +368,11 @@ func (fs *FileSystem) loadData(ino uint64) ([]byte, error) {
 
 	var data []byte
 	err := fs.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("data"))
-		d := b.Get(i2b(ino))
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
+		d := b.data.Get(i2b(ino))
 		if d == nil {
 			d = []byte{}
 		}
@@ -607,14 +654,16 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 		// if we must truncate the file
 		if flag&os.O_TRUNC != 0 {
 			err := fs.db.Update(func(tx *bolt.Tx) error {
-				b := tx.Bucket([]byte("data"))
-				return b.Put(i2b(child.Ino), []byte{})
+				b, err := fs.openFsBucket(tx)
+				if err != nil {
+					return err
+				}
+				return b.data.Put(i2b(child.Ino), []byte{})
 			})
 			if err != nil {
 				pathErr.Err = err
 				return file, pathErr
 			}
-			// fs.data[int(node.Ino)] = fs.data[int(node.Ino)][:0]
 		}
 	}
 
@@ -652,7 +701,10 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 	// }
 	var link string
 	err = fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 		link = b.Readlink(node.Ino)
 		return nil
 	})
@@ -689,25 +741,28 @@ func (fs *FileSystem) Truncate(name string, size int64) error {
 	}
 
 	return fs.db.Update(func(tx *bolt.Tx) error {
+		b, err := fs.openFsBucketWithCache(tx)
+		if err != nil {
+			return err
+		}
 
 		// update the size of the inode
 		node.Size = size
-		err = encodeNode(tx.Bucket([]byte("inodes")), node.Ino, node)
+		err = b.PutInode(node.Ino, node)
 		if err != nil {
 			return err
 		}
 
 		// update the data
-		b := tx.Bucket([]byte("data"))
 		key := i2b(node.Ino)
-		data := b.Get(key)
+		data := b.data.Get(key)
 
 		d := make([]byte, int(size))
 		if data != nil {
 			copy(d, data)
 		}
 
-		return b.Put(key, d)
+		return b.data.Put(key, d)
 	})
 
 }
@@ -787,14 +842,16 @@ func (fs *FileSystem) saveParentChild(parent *iNode, filename string, child *iNo
 
 func (fs *FileSystem) deleteInode(ino uint64) error {
 	err := fs.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("inodes"))
-		key := i2b(ino)
-		err := b.Delete(key)
+		b, err := fs.openFsBucket(tx)
 		if err != nil {
 			return err
 		}
-		b = tx.Bucket([]byte("data"))
-		b.Delete(key)
+		key := i2b(ino)
+		err = b.inodes.Delete(key)
+		if err != nil {
+			return err
+		}
+		b.data.Delete(key)
 		return nil
 	})
 	if err != nil {
@@ -913,11 +970,14 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 	var recurse func(string, uint64) error
 
 	return fs.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("inodes"))
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 
 		recurse = func(path string, ino uint64) error {
 			node := new(iNode)
-			err := decodeNode(b, ino, node)
+			err := decodeNode(b.inodes, ino, node)
 
 			err = fn(path, inodeinfo{filepath.Base(path), node}, err)
 
@@ -975,19 +1035,21 @@ func (fs *FileSystem) RemoveAll(name string) error {
 	}
 
 	err = fs.db.Update(func(tx *bolt.Tx) error {
-		nodeB := tx.Bucket([]byte("inodes"))
-		dataB := tx.Bucket([]byte("data"))
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 
 		for _, ino := range inos {
 			if rootid != 0 && ino == rootid {
 				continue
 			}
 			key := i2b(ino)
-			err := nodeB.Delete(key)
+			err := b.inodes.Delete(key)
 			if err != nil {
 				return err
 			}
-			err = dataB.Delete(key)
+			err = b.data.Delete(key)
 			if err != nil {
 				return err
 			}
@@ -1048,7 +1110,10 @@ func (fs *FileSystem) Chown(name string, uid, gid int) error {
 	}
 	var link string
 	err := fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 		link = b.Readlink(node.Ino)
 		if link == "" {
 			return os.ErrNotExist
@@ -1131,7 +1196,10 @@ func (fs *FileSystem) Readlink(name string) (string, error) {
 
 	var link string
 	err = fs.db.View(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 		link = b.Readlink(node.Ino)
 		if link == "" {
 			return os.ErrNotExist
@@ -1166,9 +1234,11 @@ func (fs *FileSystem) Symlink(source, destination string) error {
 	}
 
 	err = fs.db.Update(func(tx *bolt.Tx) error {
-		b := newFsBucket(tx)
-		b.Symlink(ino, source)
-		return nil
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
+		return b.Symlink(ino, source)
 	})
 
 	// err = fs.saveSymlink(ino, source)
