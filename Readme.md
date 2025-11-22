@@ -62,63 +62,60 @@ snap, _ := sm.Get("daily-backup")
 
 ### External Content Storage
 
-Store file content in external storage systems while keeping metadata in BoltDB:
+Store file content in any `absfs.FileSystem` implementation while keeping metadata in BoltDB:
 
 ```go
+import (
+    "github.com/absfs/boltfs"
+    "github.com/absfs/memfs"  // or any absfs implementation
+)
+
 // Use default BoltDB storage (backward compatible)
 fs, _ := boltfs.Open("myfs.db", "")
 defer fs.Close()
 
-// Use filesystem storage for file content
-contentStore, _ := boltfs.NewFilesystemContentStore("/path/to/content")
-fs, _ := boltfs.OpenWithContentStore("myfs.db", "", contentStore)
+// Use memfs for file content (in-memory storage)
+contentFS, _ := memfs.NewFS()
+fs, _ := boltfs.OpenWithContentFS("myfs.db", "", contentFS)
 defer fs.Close()
 
-// Or set content store on existing filesystem
-contentStore, _ := boltfs.NewFilesystemContentStore("/path/to/content")
-fs.SetContentStore(contentStore)
+// Or set content filesystem on existing filesystem
+contentFS, _ := memfs.NewFS()
+fs.SetContentFS(contentFS)
 
-// Implement custom storage backend
-type S3ContentStore struct {
-    bucket string
-    // ... S3 client fields
+// Use with existing bolt.DB
+db, _ := bolt.Open("myfs.db", 0644, nil)
+contentFS, _ := memfs.NewFS()
+fs, _ := boltfs.NewFSWithContentFS(db, "", contentFS)
+```
+
+**Custom Storage Backends:**
+
+Any `absfs.FileSystem` implementation can be used:
+
+```go
+// Example: osfs for local filesystem storage
+type OSFileSystem struct {
+    basePath string
 }
 
-func (s *S3ContentStore) Put(ino uint64, data []byte) error {
-    // Upload to S3
-    return nil
+func (fs *OSFileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
+    // Implement absfs.FileSystem interface
+    // Store files in basePath + name
 }
+// ... implement other absfs.FileSystem methods
 
-func (s *S3ContentStore) Get(ino uint64) ([]byte, error) {
-    // Download from S3
-    return nil, nil
-}
-
-func (s *S3ContentStore) Delete(ino uint64) error {
-    // Delete from S3
-    return nil
-}
-
-func (s *S3ContentStore) Exists(ino uint64) bool {
-    // Check if exists in S3
-    return false
-}
-
-func (s *S3ContentStore) Close() error {
-    // Cleanup
-    return nil
-}
-
-// Use custom storage
-s3Store := &S3ContentStore{bucket: "my-bucket"}
-fs, _ := boltfs.NewFSWithContentStore(db, "", s3Store)
+// Use custom filesystem
+osfs := &OSFileSystem{basePath: "/data/content"}
+fs, _ := boltfs.OpenWithContentFS("myfs.db", "", osfs)
 ```
 
 **Benefits:**
-- Separate metadata (fast BoltDB) from content (scalable storage)
-- Support for any storage backend (filesystem, S3, Azure, etc.)
-- Backward compatible - defaults to BoltDB storage
-- Proper cleanup when files are deleted
+- **Idiomatic design**: Uses standard `absfs.FileSystem` interface
+- **Composable**: Chain/layer multiple absfs implementations
+- **Rich ecosystem**: Use any existing absfs implementation (memfs, osfs, s3fs, etc.)
+- **Backward compatible**: Defaults to BoltDB storage
+- **Automatic cleanup**: Files deleted from external storage when removed
 
 ## Coming soon
 
