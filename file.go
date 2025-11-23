@@ -1,7 +1,6 @@
 package boltfs
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -53,7 +52,15 @@ func (f *File) Read(p []byte) (int, error) {
 		return 0, err
 	}
 
-	// TODO: validate info.Size()
+	// Validate and sync node size with actual data size
+	if f.node.Size != int64(len(data)) {
+		f.node.Size = int64(len(data))
+		_, err := f.fs.saveInode(f.node)
+		if err != nil {
+			return 0, err
+		}
+	}
+
 	if offset >= len(data) {
 		return 0, io.EOF
 	}
@@ -192,7 +199,7 @@ func (f *File) Readdir(n int) ([]os.FileInfo, error) {
 		return nil, os.ErrPermission
 	}
 	if !f.node.IsDir() {
-		return nil, errors.New("not a directory")
+		return nil, syscall.ENOTDIR
 	}
 	children := f.node.Children
 	if f.diroffset >= len(children) {
@@ -238,7 +245,7 @@ func (f *File) Readdirnames(n int) ([]string, error) {
 		return list, os.ErrPermission
 	}
 	if !f.node.IsDir() {
-		return list, errors.New("not a directory")
+		return list, syscall.ENOTDIR
 	}
 	children := f.node.Children
 	if f.diroffset >= len(children) {

@@ -1,11 +1,13 @@
 package boltfs
 
 import (
+	"io"
 	"os"
 	filepath "path"
 	walkpath "path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -140,7 +142,7 @@ func (s *Snapshot) ReadDir(name string) ([]os.FileInfo, error) {
 	}
 
 	if !node.IsDir() {
-		return nil, &os.PathError{Op: "readdir", Path: name, Err: errNotDir}
+		return nil, &os.PathError{Op: "readdir", Path: name, Err: syscall.ENOTDIR}
 	}
 
 	var infos []os.FileInfo
@@ -170,7 +172,7 @@ func (s *Snapshot) ReadFile(name string) ([]byte, error) {
 	}
 
 	if node.IsDir() {
-		return nil, &os.PathError{Op: "read", Path: name, Err: errNotDir}
+		return nil, &os.PathError{Op: "read", Path: name, Err: syscall.EISDIR}
 	}
 
 	data := s.bucket.data.Get(i2b(node.Ino))
@@ -383,8 +385,45 @@ func (s *Snapshot) Chdir(dir string) error            { return os.ErrPermission 
 func (s *Snapshot) Getwd() (string, error)            { return s.fs.Getwd() }
 func (s *Snapshot) TempDir() string                   { return s.fs.TempDir() }
 func (s *Snapshot) Open(name string) (absfs.File, error) {
-	// Return a read-only file handle
-	return nil, os.ErrPermission // TODO: Implement read-only file handle
+	if s.released {
+		return nil, os.ErrClosed
+	}
+
+	dir, filename := s.fs.cleanPath(name)
+	path := filepath.Join(dir, filename)
+
+	node, err := s.resolve(path)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: name, Err: err}
+	}
+
+	if node.IsDir() {
+		return &snapshotFile{
+			snapshot: s,
+			name:     name,
+			node:     node,
+			offset:   0,
+			data:     nil, // Directories have no data
+		}, nil
+	}
+
+	// Load file data
+	data := s.bucket.data.Get(i2b(node.Ino))
+	if data == nil {
+		data = []byte{}
+	}
+
+	// Make a copy to prevent external modifications
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+
+	return &snapshotFile{
+		snapshot: s,
+		name:     name,
+		node:     node,
+		offset:   0,
+		data:     dataCopy,
+	}, nil
 }
 func (s *Snapshot) Create(name string) (absfs.File, error) { return nil, os.ErrPermission }
 func (s *Snapshot) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
@@ -399,3 +438,180 @@ func (s *Snapshot) Chmod(name string, mode os.FileMode) error      { return os.E
 func (s *Snapshot) Chown(name string, uid, gid int) error          { return os.ErrPermission }
 func (s *Snapshot) Chtimes(name string, atime, mtime time.Time) error { return os.ErrPermission }
 func (s *Snapshot) Rename(oldpath, newpath string) error { return os.ErrPermission }
+
+// snapshotFile implements absfs.File for read-only access to files in a snapshot.
+type snapshotFile struct {
+	snapshot   *Snapshot
+	name       string
+	node       *iNode
+	offset     int64
+	data       []byte
+	diroffset  int
+}
+
+// Ensure snapshotFile implements absfs.File
+var _ absfs.File = (*snapshotFile)(nil)
+
+func (f *snapshotFile) Name() string {
+	return f.name
+}
+
+func (f *snapshotFile) Read(p []byte) (int, error) {
+	if f.snapshot.released {
+		return 0, os.ErrClosed
+	}
+
+	if f.node.IsDir() {
+		return 0, &os.PathError{Op: "read", Path: f.name, Err: syscall.EISDIR}
+	}
+
+	if f.offset >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+
+	n := copy(p, f.data[f.offset:])
+	f.offset += int64(n)
+	return n, nil
+}
+
+func (f *snapshotFile) ReadAt(b []byte, off int64) (n int, err error) {
+	if f.snapshot.released {
+		return 0, os.ErrClosed
+	}
+
+	if f.node.IsDir() {
+		return 0, &os.PathError{Op: "read", Path: f.name, Err: syscall.EISDIR}
+	}
+
+	if off < 0 {
+		return 0, &os.PathError{Op: "readat", Path: f.name, Err: os.ErrInvalid}
+	}
+
+	if off >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+
+	n = copy(b, f.data[off:])
+	if n < len(b) {
+		err = io.EOF
+	}
+	return n, err
+}
+
+func (f *snapshotFile) Write(p []byte) (int, error) {
+	return 0, &os.PathError{Op: "write", Path: f.name, Err: os.ErrPermission}
+}
+
+func (f *snapshotFile) WriteAt(b []byte, off int64) (n int, err error) {
+	return 0, &os.PathError{Op: "writeat", Path: f.name, Err: os.ErrPermission}
+}
+
+func (f *snapshotFile) WriteString(s string) (n int, err error) {
+	return 0, &os.PathError{Op: "write", Path: f.name, Err: os.ErrPermission}
+}
+
+func (f *snapshotFile) Seek(offset int64, whence int) (ret int64, err error) {
+	if f.snapshot.released {
+		return 0, os.ErrClosed
+	}
+
+	switch whence {
+	case io.SeekStart:
+		f.offset = offset
+	case io.SeekCurrent:
+		f.offset += offset
+	case io.SeekEnd:
+		f.offset = int64(len(f.data)) + offset
+	default:
+		return 0, &os.PathError{Op: "seek", Path: f.name, Err: os.ErrInvalid}
+	}
+
+	if f.offset < 0 {
+		f.offset = 0
+		return 0, &os.PathError{Op: "seek", Path: f.name, Err: os.ErrInvalid}
+	}
+
+	return f.offset, nil
+}
+
+func (f *snapshotFile) Close() error {
+	// Read-only file, nothing to sync or close
+	return nil
+}
+
+func (f *snapshotFile) Sync() error {
+	// Read-only file, nothing to sync
+	return nil
+}
+
+func (f *snapshotFile) Stat() (os.FileInfo, error) {
+	if f.snapshot.released {
+		return nil, os.ErrClosed
+	}
+	return &fileinfo{name: filepath.Base(f.name), node: f.node}, nil
+}
+
+func (f *snapshotFile) Truncate(size int64) error {
+	return &os.PathError{Op: "truncate", Path: f.name, Err: os.ErrPermission}
+}
+
+func (f *snapshotFile) Readdir(n int) ([]os.FileInfo, error) {
+	if f.snapshot.released {
+		return nil, os.ErrClosed
+	}
+
+	if !f.node.IsDir() {
+		return nil, &os.PathError{Op: "readdir", Path: f.name, Err: syscall.ENOTDIR}
+	}
+
+	children := f.node.Children
+	if f.diroffset >= len(children) {
+		return nil, io.EOF
+	}
+
+	// Calculate how many entries to return
+	remaining := len(children) - f.diroffset
+	if n < 1 {
+		n = remaining
+	} else if n > remaining {
+		n = remaining
+	}
+
+	infos := make([]os.FileInfo, n)
+	endOffset := f.diroffset + n
+	for i, entry := range children[f.diroffset:endOffset] {
+		node, err := f.snapshot.bucket.GetInode(entry.Ino)
+		if err != nil {
+			return nil, err
+		}
+		infos[i] = &fileinfo{name: entry.Name, node: node}
+	}
+	f.diroffset = endOffset
+	return infos, nil
+}
+
+func (f *snapshotFile) Readdirnames(n int) ([]string, error) {
+	if f.snapshot.released {
+		return nil, os.ErrClosed
+	}
+
+	if !f.node.IsDir() {
+		return nil, &os.PathError{Op: "readdirnames", Path: f.name, Err: syscall.ENOTDIR}
+	}
+
+	children := f.node.Children
+	if f.diroffset >= len(children) {
+		return nil, io.EOF
+	}
+
+	if n < 1 || len(children[f.diroffset:]) < n {
+		n = len(children[f.diroffset:])
+	}
+
+	list := make([]string, n)
+	for i, entry := range children[f.diroffset : f.diroffset+n] {
+		list[i] = entry.Name
+	}
+	f.diroffset += n
+	return list, nil
+}
