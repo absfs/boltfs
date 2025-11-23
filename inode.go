@@ -137,7 +137,7 @@ func copyInode(source *iNode) *iNode {
 // is replaced and it's ino is returned.
 func (n *iNode) Link(name string, ino uint64) (uint64, error) {
 	if !n.IsDir() {
-		return 0, errNotDir
+		return 0, syscall.ENOTDIR
 	}
 
 	x := sort.Search(len(n.Children), func(i int) bool {

@@ -1,6 +1,6 @@
 # BoltFS Performance Benchmarks
 
-This document provides benchmark results evaluating the performance impact of the new inode cache, snapshot, and FUSE features added to BoltFS.
+This document provides benchmark results evaluating the performance impact of the new inode cache and snapshot features added to BoltFS.
 
 ## Test Environment
 
@@ -189,15 +189,6 @@ if err != nil {
 - Atomic rollback capability
 - No duplicate data storage
 
-## FUSE Performance Considerations
-
-The FUSE implementation provides a framework for mounting BoltFS as a real filesystem. Performance characteristics:
-
-- **Overhead**: FUSE adds ~10-20µs latency per operation (kernel/userspace context switch)
-- **Cache benefit**: Even more important with FUSE due to higher per-operation cost
-- **Recommended cache size**: 2x-5x larger than non-FUSE usage
-- **Best for**: Applications that need standard filesystem interface
-
 ## Optimization Recommendations
 
 ### 1. Choose Appropriate Cache Size
@@ -247,15 +238,9 @@ The new features provide significant performance benefits:
    - **Zero copy** data structure
    - Enables atomic backups and rollbacks
 
-3. **FUSE Support**:
-   - Framework for mounting as real filesystem
-   - Cache is critical for FUSE performance
-   - Recommended for standard filesystem interface needs
-
 ### When to Use Each Feature
 
 - **Enable cache**: Always (default: 1000 inodes)
 - **Use snapshots**: Backups, testing, rollback scenarios
-- **Use FUSE**: When standard filesystem interface is needed
 
 The implementation maintains backward compatibility while providing substantial performance improvements for common use cases.

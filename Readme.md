@@ -120,9 +120,7 @@ fs, _ := boltfs.OpenWithContentFS("myfs.db", "", osfs)
 ## Coming soon
 
 - Improved test coverage
-- Error for error match to `os` package implementations
 - FastWalk high performance walker (non sorted, os.FileMode only)
-- FUSE mounting support via separate absfs-compatible package
 
 ## License
 
