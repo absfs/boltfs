@@ -18,7 +18,6 @@ import (
 	"github.com/absfs/absfs"
 )
 
-var errNotDir = errors.New("not a directory")
 var errNilIno = errors.New("ino is nil")
 var errNoData = errors.New("no data")
 
@@ -1091,6 +1090,64 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 				return nil
 			}
 
+			for _, child := range node.Children {
+				err := recurse(filepath.Join(path, child.Name), child.Ino)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		return recurse(root, ino)
+	})
+}
+
+// FastWalk walks the file tree rooted at root, calling fn for each file or
+// directory in the tree, including root. Unlike Walk, FastWalk does not
+// guarantee sorted output and only provides the file mode, trading completeness
+// for performance. This is ideal for operations that only need to check file
+// types without requiring full metadata. FastWalk does not follow symbolic links.
+//
+// The function signature is: fn(path string, mode os.FileMode) error
+// If fn returns an error, FastWalk stops and returns that error.
+// If fn returns filepath.SkipDir when invoked on a directory, FastWalk skips
+// that directory's contents.
+func (fs *FileSystem) FastWalk(root string, fn func(string, os.FileMode) error) error {
+	dir, filename := fs.cleanPath(root)
+	parent, node := fs.loadParentChild(dir, filename)
+	root = filepath.Join(dir, filename)
+	if node == nil {
+		node = parent
+	}
+
+	if !node.IsDir() {
+		return fn(root, node.Mode)
+	}
+	ino := node.Ino
+
+	var recurse func(string, uint64) error
+
+	return fs.db.View(func(tx *bolt.Tx) error {
+		b, err := fs.openFsBucketWithCache(tx)
+		if err != nil {
+			return err
+		}
+
+		recurse = func(path string, ino uint64) error {
+			node, err := b.GetInode(ino)
+			if err != nil {
+				return err
+			}
+
+			err = fn(path, node.Mode)
+			if err != nil {
+				if err == walkpath.SkipDir {
+					return nil
+				}
+				return err
+			}
+
+			// Traverse children without sorting (faster)
 			for _, child := range node.Children {
 				err := recurse(filepath.Join(path, child.Name), child.Ino)
 				if err != nil {
