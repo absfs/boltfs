@@ -1,3 +1,6 @@
 .vscode
 *.db
 *.cov
+.claude/
+CLAUDE.md
+.project_meta/
