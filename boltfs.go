@@ -1210,12 +1210,8 @@ func (fs *FileSystem) RemoveAll(name string) error {
 			}
 			node, err := b.GetInode(ino)
 			if err != nil {
-				// DEBUG: log when we can't get inode
-				fmt.Printf("DEBUG: Could not get inode %d: %v\n", ino, err)
 				continue // Node might already be deleted
 			}
-			// DEBUG: log inode type
-			fmt.Printf("DEBUG: Inode %d isDir=%v mode=%v\n", ino, node.IsDir(), node.Mode)
 			// Only try to remove content for regular files, not directories
 			if !node.IsDir() {
 				fileInos = append(fileInos, ino)
@@ -1227,18 +1223,12 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		return err
 	}
 
-	// DEBUG: log what we're about to remove
-	fmt.Printf("DEBUG: About to remove content for %d file inodes: %v\n", len(fileInos), fileInos)
-
 	if fs.contentFS != nil {
 		for _, ino := range fileInos {
 			path := inoToPath(ino)
-			fmt.Printf("DEBUG: Removing content file %s for inode %d\n", path, ino)
 			if err := fs.contentFS.Remove(path); err != nil && !os.IsNotExist(err) {
-				fmt.Printf("DEBUG: Failed to remove %s: %v\n", path, err)
 				return err
 			}
-			fmt.Printf("DEBUG: Successfully removed content file %s\n", path)
 		}
 	}
 
