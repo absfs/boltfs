@@ -112,6 +112,7 @@ func Test_fsBucket_NextInode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
+		db.Close() // Close the database before removing the file (required on Windows)
 		err := os.Remove(testfile)
 		if err != nil {
 			t.Error(err)
