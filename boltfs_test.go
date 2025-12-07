@@ -647,7 +647,9 @@ func TestSymlinks(t *testing.T) {
 			fs.MkdirAll(filepath.Dir(test.Path), 0700)
 
 			link := test.Readlink
-			if !filepath.IsAbs(test.Readlink) {
+			// Since boltfs uses / as separator, check for absolute path with /
+			// rather than filepath.IsAbs which requires drive letters on Windows
+			if len(test.Readlink) == 0 || test.Readlink[0] != '/' {
 				link = filepath.Join(test.Path, test.Readlink)
 			}
 
