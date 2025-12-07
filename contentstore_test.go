@@ -207,9 +207,13 @@ func TestRemoveAllWithExternalStorage(t *testing.T) {
 	// Verify all content files were deleted from memfs
 	for _, ino := range inodes {
 		contentPath := inoToPath(ino)
-		_, err := contentFS.Stat(contentPath)
+		info, err := contentFS.Stat(contentPath)
 		if !os.IsNotExist(err) {
-			t.Errorf("Content for inode %d should not exist in memfs, got error: %v", ino, err)
+			if info != nil {
+				t.Errorf("Content for inode %d (path %s) should not exist in memfs, but found file with size %d, got error: %v", ino, contentPath, info.Size(), err)
+			} else {
+				t.Errorf("Content for inode %d (path %s) should not exist in memfs, got error: %v", ino, contentPath, err)
+			}
 		}
 	}
 }
