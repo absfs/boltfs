@@ -1,5 +1,10 @@
-
 # BoltFS - A Complete Filesystem Implementation for BoltDB
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/absfs/boltfs.svg)](https://pkg.go.dev/github.com/absfs/boltfs)
+[![Go Report Card](https://goreportcard.com/badge/github.com/absfs/boltfs)](https://goreportcard.com/report/github.com/absfs/boltfs)
+[![CI](https://github.com/absfs/boltfs/actions/workflows/ci.yml/badge.svg)](https://github.com/absfs/boltfs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 BoltFS provides a full featured filesystem on top of a boltdb database. This
 package implements most of the filesystem functions from the `os` standard
 library package, even including support for symbolic links.
