@@ -965,6 +965,11 @@ func (fs *FileSystem) Mkdir(name string, perm os.FileMode) error {
 	pathErr := &os.PathError{Op: "mkdir", Path: name}
 	dir, filename := fs.cleanPath(name)
 	parent, child := fs.loadParentChild(dir, filename)
+	if parent == nil {
+		pathErr.Err = os.ErrNotExist
+		pathErr.Path = dir
+		return pathErr
+	}
 	if child != nil {
 		pathErr.Err = os.ErrExist
 		return pathErr
@@ -1406,6 +1411,12 @@ func (fs *FileSystem) Symlink(source, destination string) error {
 
 	dstDir, dstFilename := fs.cleanPath(destination)
 	dstParent, dstChild := fs.loadParentChild(dstDir, dstFilename)
+
+	if dstParent == nil {
+		pathErr.Err = os.ErrNotExist
+		pathErr.Path = dstDir
+		return pathErr
+	}
 
 	if dstChild != nil {
 		pathErr.Err = os.ErrExist
