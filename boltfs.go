@@ -1197,11 +1197,34 @@ func (fs *FileSystem) RemoveAll(name string) error {
 	}
 
 	// Delete content from external content filesystem first
-	if fs.contentFS != nil {
+	// We need to collect which inodes are regular files vs directories
+	var fileInos []uint64
+	err = fs.db.View(func(tx *bolt.Tx) error {
+		b, err := fs.openFsBucket(tx)
+		if err != nil {
+			return err
+		}
 		for _, ino := range inos {
 			if rootid != 0 && ino == rootid {
 				continue
 			}
+			node, err := b.GetInode(ino)
+			if err != nil {
+				continue // Node might already be deleted
+			}
+			// Only try to remove content for regular files, not directories
+			if !node.IsDir() {
+				fileInos = append(fileInos, ino)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if fs.contentFS != nil {
+		for _, ino := range fileInos {
 			path := inoToPath(ino)
 			if err := fs.contentFS.Remove(path); err != nil && !os.IsNotExist(err) {
 				return err
