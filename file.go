@@ -316,7 +316,7 @@ func (i *fileinfo) Size() int64 {
 }
 
 func (i *fileinfo) ModTime() time.Time {
-	return i.node.Mtime
+	return i.node.Mtime()
 }
 
 func (i *fileinfo) Mode() os.FileMode {

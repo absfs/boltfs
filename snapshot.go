@@ -302,7 +302,7 @@ func (s *Snapshot) CopyToFS(srcPath, dstPath string) error {
 
 	// Set times
 	sys := info.Sys().(*iNode)
-	return s.fs.Chtimes(dstPath, sys.Atime, sys.Mtime)
+	return s.fs.Chtimes(dstPath, sys.Atime(), sys.Mtime())
 }
 
 // SnapshotManager manages named snapshots for a filesystem.

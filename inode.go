@@ -24,14 +24,85 @@ type iNode struct {
 	Nlink uint64
 	Size  int64
 
-	Ctime time.Time // creation time
-	Atime time.Time // access time
-	Mtime time.Time // modification time
+	ctime time.Time // creation time
+	atime time.Time // access time
+	mtime time.Time // modification time
 
 	Uid uint32
 	Gid uint32
 
 	Children entries
+}
+
+// Ctime returns the creation time of the inode.
+func (n *iNode) Ctime() time.Time { return n.ctime }
+
+// Atime returns the access time of the inode.
+func (n *iNode) Atime() time.Time { return n.atime }
+
+// Mtime returns the modification time of the inode.
+func (n *iNode) Mtime() time.Time { return n.mtime }
+
+// SetCtime sets the creation time of the inode.
+func (n *iNode) SetCtime(t time.Time) { n.ctime = t }
+
+// SetAtime sets the access time of the inode.
+func (n *iNode) SetAtime(t time.Time) { n.atime = t }
+
+// SetMtime sets the modification time of the inode.
+func (n *iNode) SetMtime(t time.Time) { n.mtime = t }
+
+// gobInode is used for gob encoding/decoding with exported fields
+type gobInode struct {
+	Ino      uint64
+	Mode     os.FileMode
+	Nlink    uint64
+	Size     int64
+	Ctime    time.Time
+	Atime    time.Time
+	Mtime    time.Time
+	Uid      uint32
+	Gid      uint32
+	Children entries
+}
+
+// GobEncode implements gob.GobEncoder
+func (n *iNode) GobEncode() ([]byte, error) {
+	g := gobInode{
+		Ino:      n.Ino,
+		Mode:     n.Mode,
+		Nlink:    n.Nlink,
+		Size:     n.Size,
+		Ctime:    n.ctime,
+		Atime:    n.atime,
+		Mtime:    n.mtime,
+		Uid:      n.Uid,
+		Gid:      n.Gid,
+		Children: n.Children,
+	}
+	var buf bytes.Buffer
+	err := gob.NewEncoder(&buf).Encode(&g)
+	return buf.Bytes(), err
+}
+
+// GobDecode implements gob.GobDecoder
+func (n *iNode) GobDecode(data []byte) error {
+	var g gobInode
+	err := gob.NewDecoder(bytes.NewReader(data)).Decode(&g)
+	if err != nil {
+		return err
+	}
+	n.Ino = g.Ino
+	n.Mode = g.Mode
+	n.Nlink = g.Nlink
+	n.Size = g.Size
+	n.ctime = g.Ctime
+	n.atime = g.Atime
+	n.mtime = g.Mtime
+	n.Uid = g.Uid
+	n.Gid = g.Gid
+	n.Children = g.Children
+	return nil
 }
 
 // os.FileInfo implementation
@@ -53,7 +124,7 @@ func (info inodeinfo) Mode() os.FileMode {
 }
 
 func (info inodeinfo) ModTime() time.Time {
-	return info.node.Mtime
+	return info.node.Mtime()
 }
 
 func (info inodeinfo) Size() int64 {
@@ -100,27 +171,26 @@ func (e entries) Less(i, j int) bool { return e[i].Name < e[j].Name }
 func newInode(mode os.FileMode) *iNode {
 	now := time.Now()
 	return &iNode{
-		Atime: now,
-		Mtime: now,
-		Ctime: now,
+		atime: now,
+		mtime: now,
+		ctime: now,
 		Mode:  mode,
 	}
 }
 
 func copyInode(source *iNode) *iNode {
 	target := &iNode{
-		Ino:   source.Ino,
-		Mode:  source.Mode,
-		Nlink: source.Nlink,
-		Size:  source.Size,
-
-		Ctime:    source.Ctime,
-		Atime:    source.Atime,
-		Mtime:    source.Mtime,
+		Ino:      source.Ino,
+		Mode:     source.Mode,
+		Nlink:    source.Nlink,
+		Size:     source.Size,
 		Uid:      source.Uid,
 		Gid:      source.Gid,
 		Children: make(entries, len(source.Children)),
 	}
+	target.SetCtime(source.Ctime())
+	target.SetAtime(source.Atime())
+	target.SetMtime(source.Mtime())
 
 	for i := range source.Children {
 		target.Children[i] = &entry{
@@ -210,13 +280,13 @@ func (n *iNode) IsDir() bool {
 }
 
 func (n *iNode) accessed() {
-	n.Atime = time.Now()
+	n.SetAtime(time.Now())
 }
 
 func (n *iNode) modified() {
 	now := time.Now()
-	n.Atime = now
-	n.Mtime = now
+	n.SetAtime(now)
+	n.SetMtime(now)
 }
 
 func (n *iNode) countUp() uint64 {
