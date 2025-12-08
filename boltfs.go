@@ -1296,8 +1296,8 @@ func (fs *FileSystem) Chtimes(name string, atime time.Time, mtime time.Time) err
 		return os.ErrNotExist
 	}
 
-	node.Atime = atime
-	node.Mtime = mtime
+	node.SetAtime(atime)
+	node.SetMtime(mtime)
 
 	_, err := fs.saveInode(node)
 	return err
