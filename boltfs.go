@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	filepath "path"
+	"path"
 	walkpath "path/filepath"
 	"sort"
 	"strings"
@@ -367,7 +367,7 @@ var errInvalidIno = errors.New("invalid ino")
 func inoToPath(ino uint64) string {
 	hex := fmt.Sprintf("%016x", ino)
 	// Create subdirectory structure: /01/0123456789abcdef
-	return filepath.Join("/", hex[:2], hex)
+	return path.Join("/", hex[:2], hex)
 }
 
 // loadInode - loads the iNode defined by `ino` or returns an error
@@ -396,16 +396,16 @@ func (fs *FileSystem) saveData(ino uint64, data []byte) error {
 
 	// Use external content filesystem if available, otherwise fall back to BoltDB data bucket
 	if fs.contentFS != nil {
-		path := inoToPath(ino)
+		contentPath := inoToPath(ino)
 
 		// Ensure parent directory exists
-		dir := filepath.Dir(path)
+		dir := path.Dir(contentPath)
 		if err := fs.contentFS.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory: %w", err)
 		}
 
 		// Write file atomically
-		f, err := fs.contentFS.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		f, err := fs.contentFS.OpenFile(contentPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			return fmt.Errorf("failed to create file: %w", err)
 		}
@@ -435,9 +435,9 @@ func (fs *FileSystem) loadData(ino uint64) ([]byte, error) {
 
 	// Use external content filesystem if available, otherwise fall back to BoltDB data bucket
 	if fs.contentFS != nil {
-		path := inoToPath(ino)
+		contentPath := inoToPath(ino)
 
-		f, err := fs.contentFS.OpenFile(path, os.O_RDONLY, 0)
+		f, err := fs.contentFS.OpenFile(contentPath, os.O_RDONLY, 0)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return []byte{}, nil
@@ -478,12 +478,12 @@ func (fs *FileSystem) loadData(ino uint64) ([]byte, error) {
 // cleanPath - takes the absolute or relative path provided by `name` and
 // returns the directory and filename of the cleand absolute path.
 func (fs *FileSystem) cleanPath(name string) (string, string) {
-	path := name
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(fs.cwd, path)
+	p := name
+	if !path.IsAbs(p) {
+		p = path.Join(fs.cwd, p)
 	}
-	dir, filename := filepath.Split(path)
-	dir = filepath.Clean(dir)
+	dir, filename := path.Split(p)
+	dir = path.Clean(dir)
 	return dir, filename
 }
 
@@ -520,12 +520,12 @@ func (fs *FileSystem) Rename(oldpath, newpath string) error {
 	}
 	if srcChild == nil {
 		linkErr.Err = os.ErrNotExist
-		linkErr.Old = filepath.Join(srcDir, srcFilename)
+		linkErr.Old = path.Join(srcDir, srcFilename)
 		return linkErr
 	}
 	if dstChild != nil {
 		linkErr.Err = os.ErrExist
-		linkErr.New = filepath.Join(dstDir, dstFilename)
+		linkErr.New = path.Join(dstDir, dstFilename)
 		return linkErr
 	}
 
@@ -580,12 +580,12 @@ func (fs *FileSystem) Copy(source, destination string) error {
 	}
 	if srcChild == nil {
 		pathErr.Err = os.ErrNotExist
-		pathErr.Path = filepath.Join(srcDir, srcFilename)
+		pathErr.Path = path.Join(srcDir, srcFilename)
 		return pathErr
 	}
 	if dstChild != nil {
 		pathErr.Err = os.ErrExist
-		pathErr.Path = filepath.Join(dstDir, dstFilename)
+		pathErr.Path = path.Join(dstDir, dstFilename)
 		return pathErr
 	}
 
@@ -627,7 +627,7 @@ func (fs *FileSystem) Chdir(name string) error {
 	if err != nil {
 		return err
 	}
-	fs.cwd = filepath.Join(dir, filename)
+	fs.cwd = path.Join(dir, filename)
 	return nil
 }
 
@@ -771,7 +771,7 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 
 	dir, filename := fs.cleanPath(name)
-	node, err := fs.resolve(filepath.Join(dir, filename))
+	node, err := fs.resolve(path.Join(dir, filename))
 	if err != nil {
 		return nil, err
 	}
@@ -800,8 +800,8 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 		return nil, err
 	}
 
-	if !filepath.IsAbs(link) {
-		link = filepath.Join(name, link)
+	if !path.IsAbs(link) {
+		link = path.Join(name, link)
 	}
 
 	return fs.Stat(link)
@@ -811,18 +811,18 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 // there is an error, it will be of type *os.PathError.
 func (fs *FileSystem) Truncate(name string, size int64) error {
 	dir, filename := fs.cleanPath(name)
-	path := filepath.Join(dir, filename)
-	node, err := fs.resolve(path)
+	p := path.Join(dir, filename)
+	node, err := fs.resolve(p)
 	if err != nil {
 		if err != os.ErrNotExist {
 			return err
 		}
-		f, err := fs.Create(path)
+		f, err := fs.Create(p)
 		if err != nil {
 			return err
 		}
 		f.Close()
-		node, err = fs.resolve(path)
+		node, err = fs.resolve(p)
 		if err != nil {
 			return err
 		}
@@ -931,8 +931,8 @@ func (fs *FileSystem) saveParentChild(parent *iNode, filename string, child *iNo
 func (fs *FileSystem) deleteInode(ino uint64) error {
 	// Delete from external content filesystem first
 	if fs.contentFS != nil {
-		path := inoToPath(ino)
-		if err := fs.contentFS.Remove(path); err != nil && !os.IsNotExist(err) {
+		contentPath := inoToPath(ino)
+		if err := fs.contentFS.Remove(contentPath); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -990,12 +990,12 @@ func (fs *FileSystem) Mkdir(name string, perm os.FileMode) error {
 // a directory, MkdirAll does nothing and returns nil.
 func (fs *FileSystem) MkdirAll(name string, perm os.FileMode) error {
 	dir, filename := fs.cleanPath(name)
-	name = strings.TrimLeft(filepath.Join(dir, filename), "/")
+	name = strings.TrimLeft(path.Join(dir, filename), "/")
 
-	path := "/"
-	for _, p := range strings.Split(name, "/") {
-		path = filepath.Join(path, p)
-		err := fs.Mkdir(path, perm)
+	p := "/"
+	for _, part := range strings.Split(name, "/") {
+		p = path.Join(p, part)
+		err := fs.Mkdir(p, perm)
 
 		if err != nil {
 			patherr := err.(*os.PathError)
@@ -1061,7 +1061,7 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 
 	dir, filename := fs.cleanPath(root)
 	parent, node := fs.loadParentChild(dir, filename)
-	root = filepath.Join(dir, filename)
+	root = path.Join(dir, filename)
 	if node == nil {
 		node = parent
 	}
@@ -1079,11 +1079,11 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 			return err
 		}
 
-		recurse = func(path string, ino uint64) error {
+		recurse = func(p string, ino uint64) error {
 			node := new(iNode)
 			err := decodeNode(b.inodes, ino, node)
 
-			err = fn(path, inodeinfo{filepath.Base(path), node}, err)
+			err = fn(p, inodeinfo{path.Base(p), node}, err)
 
 			if err != nil {
 				if err == walkpath.SkipDir {
@@ -1096,7 +1096,7 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 			}
 
 			for _, child := range node.Children {
-				err := recurse(filepath.Join(path, child.Name), child.Ino)
+				err := recurse(path.Join(p, child.Name), child.Ino)
 				if err != nil {
 					return err
 				}
@@ -1120,7 +1120,7 @@ func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) erro
 func (fs *FileSystem) FastWalk(root string, fn func(string, os.FileMode) error) error {
 	dir, filename := fs.cleanPath(root)
 	parent, node := fs.loadParentChild(dir, filename)
-	root = filepath.Join(dir, filename)
+	root = path.Join(dir, filename)
 	if node == nil {
 		node = parent
 	}
@@ -1138,13 +1138,13 @@ func (fs *FileSystem) FastWalk(root string, fn func(string, os.FileMode) error) 
 			return err
 		}
 
-		recurse = func(path string, ino uint64) error {
+		recurse = func(p string, ino uint64) error {
 			node, err := b.GetInode(ino)
 			if err != nil {
 				return err
 			}
 
-			err = fn(path, node.Mode)
+			err = fn(p, node.Mode)
 			if err != nil {
 				if err == walkpath.SkipDir {
 					return nil
@@ -1154,7 +1154,7 @@ func (fs *FileSystem) FastWalk(root string, fn func(string, os.FileMode) error) 
 
 			// Traverse children without sorting (faster)
 			for _, child := range node.Children {
-				err := recurse(filepath.Join(path, child.Name), child.Ino)
+				err := recurse(path.Join(p, child.Name), child.Ino)
 				if err != nil {
 					return err
 				}
@@ -1180,7 +1180,7 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		rootid = parent.Ino
 	}
 
-	err := fs.Walk(filepath.Join(dir, filename), func(path string, info os.FileInfo, err error) error {
+	err := fs.Walk(path.Join(dir, filename), func(p string, info os.FileInfo, err error) error {
 		node, ok := info.Sys().(*iNode)
 		if !ok {
 			return errors.New("unable to cast os.FileInfo to *iNode")
@@ -1225,8 +1225,8 @@ func (fs *FileSystem) RemoveAll(name string) error {
 
 	if fs.contentFS != nil {
 		for _, ino := range fileInos {
-			path := inoToPath(ino)
-			if err := fs.contentFS.Remove(path); err != nil && !os.IsNotExist(err) {
+			contentPath := inoToPath(ino)
+			if err := fs.contentFS.Remove(contentPath); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
@@ -1340,8 +1340,8 @@ func (fs *FileSystem) Chown(name string, uid, gid int) error {
 	if err != nil {
 		return err
 	}
-	if !filepath.IsAbs(link) {
-		link = filepath.Join(name, link)
+	if !path.IsAbs(link) {
+		link = path.Join(name, link)
 	}
 
 	return fs.Chown(link, uid, gid)
@@ -1368,7 +1368,7 @@ func (fs *FileSystem) Chmod(name string, mode os.FileMode) error {
 func (fs *FileSystem) Lstat(name string) (os.FileInfo, error) {
 	pathErr := &os.PathError{Op: "lstat", Path: name}
 	dir, filename := fs.cleanPath(name)
-	node, err := fs.resolve(filepath.Join(dir, filename))
+	node, err := fs.resolve(path.Join(dir, filename))
 	if err != nil {
 		pathErr.Err = err
 		return nil, pathErr

@@ -2,7 +2,7 @@ package boltfs
 
 import (
 	"os"
-	filepath "path"
+	"path"
 	"strings"
 
 	bolt "go.etcd.io/bbolt"
@@ -105,7 +105,7 @@ func bucketInit(tx *bolt.Tx, bucketpath string) error {
 	b = tx
 
 	// create nested buckets
-	names := strings.Split(strings.Trim(filepath.Clean(bucketpath), "/"), "/")
+	names := strings.Split(strings.Trim(path.Clean(bucketpath), "/"), "/")
 
 	var paths []string
 	for _, name := range names {
@@ -136,7 +136,7 @@ func openBucket(tx *bolt.Tx, bucketpath string) (bucketer, error) {
 	var b bucketer
 	b = tx
 
-	names := strings.Split(strings.Trim(filepath.Clean(bucketpath), "/"), "/")
+	names := strings.Split(strings.Trim(path.Clean(bucketpath), "/"), "/")
 	for _, name := range names {
 		if name == "" || name == "." {
 			continue

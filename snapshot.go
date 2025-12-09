@@ -3,7 +3,7 @@ package boltfs
 import (
 	"io"
 	"os"
-	filepath "path"
+	"path"
 	walkpath "path/filepath"
 	"sort"
 	"strings"
@@ -116,9 +116,9 @@ func (s *Snapshot) Stat(name string) (os.FileInfo, error) {
 	}
 
 	dir, filename := s.fs.cleanPath(name)
-	path := filepath.Join(dir, filename)
+	p := path.Join(dir, filename)
 
-	node, err := s.resolve(path)
+	node, err := s.resolve(p)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
 	}
@@ -134,9 +134,9 @@ func (s *Snapshot) ReadDir(name string) ([]os.FileInfo, error) {
 	}
 
 	dir, filename := s.fs.cleanPath(name)
-	path := filepath.Join(dir, filename)
+	p := path.Join(dir, filename)
 
-	node, err := s.resolve(path)
+	node, err := s.resolve(p)
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir", Path: name, Err: err}
 	}
@@ -164,9 +164,9 @@ func (s *Snapshot) ReadFile(name string) ([]byte, error) {
 	}
 
 	dir, filename := s.fs.cleanPath(name)
-	path := filepath.Join(dir, filename)
+	p := path.Join(dir, filename)
 
-	node, err := s.resolve(path)
+	node, err := s.resolve(p)
 	if err != nil {
 		return nil, &os.PathError{Op: "read", Path: name, Err: err}
 	}
@@ -194,9 +194,9 @@ func (s *Snapshot) Readlink(name string) (string, error) {
 	}
 
 	dir, filename := s.fs.cleanPath(name)
-	path := filepath.Join(dir, filename)
+	p := path.Join(dir, filename)
 
-	node, err := s.resolve(path)
+	node, err := s.resolve(p)
 	if err != nil {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: err}
 	}
@@ -235,7 +235,7 @@ func (s *Snapshot) Walk(root string, fn func(string, os.FileInfo, error) error) 
 	}
 
 	for _, info := range infos {
-		childPath := filepath.Join(root, info.Name())
+		childPath := path.Join(root, info.Name())
 		err = s.Walk(childPath, fn)
 		if err != nil {
 			if err == walkpath.SkipDir {
@@ -274,8 +274,8 @@ func (s *Snapshot) CopyToFS(srcPath, dstPath string) error {
 		}
 
 		for _, child := range children {
-			childSrc := filepath.Join(srcPath, child.Name())
-			childDst := filepath.Join(dstPath, child.Name())
+			childSrc := path.Join(srcPath, child.Name())
+			childDst := path.Join(dstPath, child.Name())
 			err = s.CopyToFS(childSrc, childDst)
 			if err != nil {
 				return err
@@ -390,9 +390,9 @@ func (s *Snapshot) Open(name string) (absfs.File, error) {
 	}
 
 	dir, filename := s.fs.cleanPath(name)
-	path := filepath.Join(dir, filename)
+	p := path.Join(dir, filename)
 
-	node, err := s.resolve(path)
+	node, err := s.resolve(p)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
@@ -548,7 +548,7 @@ func (f *snapshotFile) Stat() (os.FileInfo, error) {
 	if f.snapshot.released {
 		return nil, os.ErrClosed
 	}
-	return &fileinfo{name: filepath.Base(f.name), node: f.node}, nil
+	return &fileinfo{name: path.Base(f.name), node: f.node}, nil
 }
 
 func (f *snapshotFile) Truncate(size int64) error {
