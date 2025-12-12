@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"testing"
+
+	"github.com/absfs/fstools"
 )
 
 // Benchmark helpers
@@ -464,7 +466,7 @@ func BenchmarkWalk_NoCache(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		count := 0
-		fs.Walk("/a", func(path string, info os.FileInfo, err error) error {
+		fstools.Walk(fs, "/a", func(path string, info os.FileInfo, err error) error {
 			count++
 			return nil
 		})
@@ -486,7 +488,7 @@ func BenchmarkWalk_WithCache(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		count := 0
-		fs.Walk("/a", func(path string, info os.FileInfo, err error) error {
+		fstools.Walk(fs, "/a", func(path string, info os.FileInfo, err error) error {
 			count++
 			return nil
 		})

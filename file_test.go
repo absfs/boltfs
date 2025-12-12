@@ -364,20 +364,18 @@ func TestFile(t *testing.T) {
 	}
 
 	names, err := f.Readdirnames(-1)
+	// When n <= 0, Readdirnames returns nil error even for empty directories
+	// (this matches Go's standard library behavior for os.File)
 	if err != nil {
-		if err != io.EOF {
-			t.Error(err)
-		}
-	} else {
-		t.Error("expected io.EOF")
+		t.Errorf("Readdirnames(-1) should return nil error for empty dir, got: %v", err)
+	}
+	if len(names) != 0 {
+		t.Errorf("list should be empty %d", len(names))
 	}
 
 	err = f.Close()
 	if err != nil {
 		t.Error(err)
-	}
-	if len(names) != 0 {
-		t.Errorf("list should be empty %d", len(names))
 	}
 
 	// cleanup

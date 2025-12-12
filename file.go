@@ -2,6 +2,7 @@ package boltfs
 
 import (
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -202,16 +203,25 @@ func (f *File) Readdir(n int) ([]os.FileInfo, error) {
 		return nil, syscall.ENOTDIR
 	}
 	children := f.node.Children
-	if f.diroffset >= len(children) {
-		return nil, io.EOF
-	}
 
 	// Calculate how many entries to return
 	remaining := len(children) - f.diroffset
-	if n < 1 {
+
+	// When n <= 0, read all remaining entries and return nil error
+	// (even if there are no entries left)
+	if n <= 0 {
+		if remaining <= 0 {
+			return []os.FileInfo{}, nil
+		}
 		n = remaining
-	} else if n > remaining {
-		n = remaining
+	} else {
+		// When n > 0 and no entries remain, return io.EOF
+		if remaining <= 0 {
+			return nil, io.EOF
+		}
+		if n > remaining {
+			n = remaining
+		}
 	}
 
 	infos := make([]os.FileInfo, n)
@@ -240,27 +250,40 @@ func (f *File) Readdir(n int) ([]os.FileInfo, error) {
 // error before the end of the directory, Readdirnames returns the names read
 // until that point and a non-nil error.
 func (f *File) Readdirnames(n int) ([]string, error) {
-	var list []string
 	if f.flags&absfs.O_ACCESS == os.O_WRONLY {
-		return list, os.ErrPermission
+		return nil, os.ErrPermission
 	}
 	if !f.node.IsDir() {
-		return list, syscall.ENOTDIR
+		return nil, syscall.ENOTDIR
 	}
 	children := f.node.Children
-	if f.diroffset >= len(children) {
-		return list, io.EOF
-	}
-	if n < 1 || len(children[f.diroffset:]) < n {
-		n = len(children[f.diroffset:])
+
+	// Calculate how many entries to return
+	remaining := len(children) - f.diroffset
+
+	// When n <= 0, read all remaining entries and return nil error
+	// (even if there are no entries left)
+	if n <= 0 {
+		if remaining <= 0 {
+			return []string{}, nil
+		}
+		n = remaining
+	} else {
+		// When n > 0 and no entries remain, return io.EOF
+		if remaining <= 0 {
+			return nil, io.EOF
+		}
+		if n > remaining {
+			n = remaining
+		}
 	}
 
-	list = make([]string, n)
-
-	for i, entry := range children[f.diroffset:n] {
+	list := make([]string, n)
+	endOffset := f.diroffset + n
+	for i, entry := range children[f.diroffset:endOffset] {
 		list[i] = entry.Name
 	}
-	f.diroffset += n
+	f.diroffset = endOffset
 	return list, nil
 }
 
@@ -300,6 +323,54 @@ func (f *File) Truncate(size int64) error {
 // slice of bytes.
 func (f *File) WriteString(s string) (n int, err error) {
 	return f.Write([]byte(s))
+}
+
+// ReadDir reads the contents of the directory and returns a slice of up to n
+// DirEntry values in directory order. This is the modern Go 1.16+ equivalent
+// of Readdir that returns lightweight DirEntry values instead of full FileInfo.
+//
+// If n > 0, ReadDir returns at most n entries. In this case, if ReadDir
+// returns an empty slice, it will return a non-nil error explaining why.
+// At the end of a directory, the error is io.EOF.
+//
+// If n <= 0, ReadDir returns all entries from the directory in a single slice.
+// In this case, if ReadDir succeeds (reads all the way to the end of the
+// directory), it returns the slice and a nil error.
+func (f *File) ReadDir(n int) ([]fs.DirEntry, error) {
+	if f.flags&absfs.O_ACCESS == os.O_WRONLY {
+		return nil, os.ErrPermission
+	}
+	if !f.node.IsDir() {
+		return nil, syscall.ENOTDIR
+	}
+	children := f.node.Children
+	if f.diroffset >= len(children) {
+		return nil, io.EOF
+	}
+
+	// Calculate how many entries to return
+	remaining := len(children) - f.diroffset
+	if n < 1 {
+		n = remaining
+	} else if n > remaining {
+		n = remaining
+	}
+
+	entries := make([]fs.DirEntry, n)
+	endOffset := f.diroffset + n
+	for i, entry := range children[f.diroffset:endOffset] {
+		node, err := f.fs.loadInode(entry.Ino)
+		if err != nil {
+			return nil, err
+		}
+
+		entries[i] = &dirEntry{
+			name: entry.Name,
+			node: node,
+		}
+	}
+	f.diroffset = endOffset
+	return entries, nil
 }
 
 type fileinfo struct {

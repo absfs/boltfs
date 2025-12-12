@@ -1,14 +1,14 @@
 package boltfs
 
 import (
-	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/absfs/absfs"
+	"github.com/absfs/fstesting"
+	"github.com/absfs/fstools"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -199,20 +199,6 @@ func TestFileSystem(t *testing.T) {
 		tempdir = bfs.TempDir()
 		if tempdir != "/foo/bar" {
 			t.Error("incorrect updated temp dir")
-		}
-
-	})
-	if bfs == nil {
-		t.Fatal("bfs == nil")
-	}
-	t.Run("separators", func(t *testing.T) {
-
-		if bfs.Separator() != '/' {
-			t.Errorf("wrong path separator %q", bfs.Separator())
-		}
-
-		if bfs.ListSeparator() != ':' {
-			t.Errorf("wrong list separator %q", bfs.ListSeparator())
 		}
 
 	})
@@ -508,7 +494,7 @@ func TestFileSystem(t *testing.T) {
 	}
 	i := 0
 	t.Run("walk", func(t *testing.T) {
-		err := bfs.Walk("/", func(path string, info os.FileInfo, err error) error {
+		err := fstools.Walk(bfs, "/", func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
@@ -569,14 +555,12 @@ func TestFileSystem(t *testing.T) {
 
 }
 
-func TestSymlinks(t *testing.T) {
-	// Skip on Windows due to pre-existing issues with symlink path handling
-	// TODO: Fix Windows path handling for symlinks
-	if os.PathSeparator == '\\' {
-		t.Skip("Skipping on Windows - symlink path handling needs fixes for Windows path semantics")
-	}
-
-	dbpath := "testingSymlinks.db"
+// TestBoltFSSuite runs the comprehensive fstesting suite against boltfs.
+// This provides standardized testing for all filesystem operations including
+// file operations, directory operations, path handling, error semantics,
+// symlinks, permissions, and timestamps.
+func TestBoltFSSuite(t *testing.T) {
+	dbpath := "testing_suite.db"
 
 	// remove any previous test state
 	os.RemoveAll(dbpath)
@@ -585,171 +569,25 @@ func TestSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// setup
-	boltfs, err := NewFS(db, "")
+
+	bfs, err := NewFS(db, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// test interface compatibility
-	var fs absfs.SymlinkFileSystem
-	fs = boltfs
-
-	type Test struct {
-		Label    string
-		Path     string
-		Readlink string
-		Error    string
-	}
-
-	testdata := []Test{
-		{
-			Label:    "abs path",
-			Path:     "/foo/bar/baz",
-			Readlink: "/foo/baz",
-			Error:    "",
-		},
-		{
-			Label:    "rel path",
-			Path:     "/foo/bar/bat",
-			Readlink: "../../bat",
-			Error:    "",
-		},
-		{
-			Label:    "same dir",
-			Path:     "/bat",
-			Readlink: "/foo",
-			Error:    "",
-		},
-		{
-			Label:    "broken",
-			Path:     "/broken",
-			Readlink: "/nil",
-			Error:    "file does not exist",
-		},
-		{
-			Label:    "circular absolute",
-			Path:     "/circular/one/two/three",
-			Readlink: "/circular/one",
-			Error:    "",
-		},
-		{
-			Label:    "circular relative",
-			Path:     "/circular/one/two/four",
-			Readlink: "../..",
-			Error:    "",
-		},
-	}
-
-	t.Run("symlinks", func(t *testing.T) {
-		//Path to test map to make testing a little easier
-		linkmap := make(map[string]Test)
-
-		// build directory structure, with all symlink targets
-		for _, test := range testdata {
-			linkmap[test.Path] = test
-
-			// folders in which files will be created
-			fs.MkdirAll(filepath.Dir(test.Path), 0700)
-
-			link := test.Readlink
-			// Since boltfs uses / as separator, check for absolute path with /
-			// rather than filepath.IsAbs which requires drive letters on Windows
-			if len(test.Readlink) == 0 || test.Readlink[0] != '/' {
-				link = filepath.Join(test.Path, test.Readlink)
-			}
-
-			// folders that symlinks will link to
-			fs.MkdirAll(link, 0700)
-
-		}
-
-		// make symlinks
-		for _, test := range testdata {
-
-			// The result of "fs.Readlink" is esssentally the same as the `source`
-			// value in a copy, so `test.Readlink` is the 'source', and
-			// `test.Path` is a symbolic link to it (a.k.a the 'target')
-			err := boltfs.Symlink(test.Readlink, test.Path)
-			if err != nil {
-				t.Fatalf("should not error: %s", err)
-			}
-		}
-
-		// remove the broken link target to break the link
-		err := fs.Remove("/nil")
-		if err != nil {
-			t.Error(err)
-		}
-
-		// `count` and `limit` are to prevent infinite walks if implementation fails
-		// to stop on symlinks as defined by `filepath.Walk`.
-		var count, limit int
-		limit = 100
-
-		err = boltfs.Walk("/", func(path string, info os.FileInfo, err error) error {
-			t.Log(path)
-			link := ""
-			if info.Mode()&os.ModeSymlink != 0 {
-				link, err = fs.Readlink(path)
-				if err != nil {
-					return err
-				}
-			}
-			if linkmap[path].Readlink != link {
-				t.Errorf("expected symlink %q -> %q", path, linkmap[path])
-			}
-
-			stat, err := fs.Stat(path)
-			if len(linkmap[path].Error) == 0 {
-				if err != nil {
-					t.Errorf("unexpected error %s", err)
-				}
-			} else {
-				if err == nil {
-					t.Errorf("expected error missing %s", linkmap[path].Error)
-				}
-			}
-
-			if stat != nil {
-				t.Logf(" Stat: %s %q %s", stat.Mode(), stat.Name(), link)
-			} else {
-				t.Logf("Stat: <nil>")
-			}
-
-			lstat, err := fs.Lstat(path)
-			if err != nil {
-				t.Errorf("fs.Lstat error=%s", err)
-			}
-			if lstat != nil {
-				t.Logf("Lstat: %s %q %s\n", lstat.Mode(), lstat.Name(), link)
-			} else {
-				t.Logf("Lstat: <nil>\n")
-			}
-			count++
-			if count > limit {
-				return errors.New("too deep")
-			}
-			return nil
-		})
-		if err != nil {
-			t.Error(err)
-		}
+	t.Cleanup(func() {
+		bfs.Close()
+		os.RemoveAll(dbpath)
 	})
 
-	err = fs.RemoveAll("/")
-	if err != nil {
-		t.Error(err)
+	suite := &fstesting.Suite{
+		FS: bfs,
+		Features: fstesting.Features{
+			Symlinks:    true,
+			Permissions: true,
+			Timestamps:  true,
+		},
 	}
 
-	err = boltfs.Close()
-	if err != nil {
-		t.Error(err)
-	}
-	// cleanup
-	err = os.RemoveAll(dbpath)
-	if err != nil {
-		t.Error(err)
-	}
-
+	suite.Run(t)
 }
