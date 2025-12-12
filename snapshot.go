@@ -2,9 +2,9 @@ package boltfs
 
 import (
 	"io"
+	"io/fs"
 	"os"
 	"path"
-	walkpath "path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -128,7 +128,7 @@ func (s *Snapshot) Stat(name string) (os.FileInfo, error) {
 
 // ReadDir reads the directory named by path in the snapshot and returns
 // a list of directory entries.
-func (s *Snapshot) ReadDir(name string) ([]os.FileInfo, error) {
+func (s *Snapshot) ReadDir(name string) ([]fs.DirEntry, error) {
 	if s.released {
 		return nil, os.ErrClosed
 	}
@@ -145,16 +145,16 @@ func (s *Snapshot) ReadDir(name string) ([]os.FileInfo, error) {
 		return nil, &os.PathError{Op: "readdir", Path: name, Err: syscall.ENOTDIR}
 	}
 
-	var infos []os.FileInfo
+	var entries []fs.DirEntry
 	for _, child := range node.Children {
 		childNode, err := s.bucket.GetInode(child.Ino)
 		if err != nil {
 			continue // Skip entries we can't read
 		}
-		infos = append(infos, inodeinfo{name: child.Name, node: childNode})
+		entries = append(entries, &dirEntry{name: child.Name, node: childNode})
 	}
 
-	return infos, nil
+	return entries, nil
 }
 
 // ReadFile reads the entire file at the given path in the snapshot.
@@ -207,45 +207,6 @@ func (s *Snapshot) Readlink(name string) (string, error) {
 
 	target := s.bucket.Readlink(node.Ino)
 	return target, nil
-}
-
-// Walk walks the file tree rooted at root in the snapshot, calling fn for each
-// file or directory in the tree, including root.
-func (s *Snapshot) Walk(root string, fn func(string, os.FileInfo, error) error) error {
-	if s.released {
-		return os.ErrClosed
-	}
-
-	info, err := s.Stat(root)
-	err = fn(root, info, err)
-	if err != nil {
-		if info != nil && info.IsDir() && err == walkpath.SkipDir {
-			return nil
-		}
-		return err
-	}
-
-	if !info.IsDir() {
-		return nil
-	}
-
-	infos, err := s.ReadDir(root)
-	if err != nil {
-		return fn(root, info, err)
-	}
-
-	for _, info := range infos {
-		childPath := path.Join(root, info.Name())
-		err = s.Walk(childPath, fn)
-		if err != nil {
-			if err == walkpath.SkipDir {
-				continue
-			}
-			return err
-		}
-	}
-
-	return nil
 }
 
 // CopyToFS copies a file or directory from the snapshot to the main filesystem.
@@ -379,8 +340,6 @@ var _ absfs.FileSystem = (*Snapshot)(nil)
 // The following methods make Snapshot compatible with absfs.FileSystem
 // for read-only operations. Write operations return errors.
 
-func (s *Snapshot) Separator() uint8                  { return '/' }
-func (s *Snapshot) ListSeparator() uint8              { return ':' }
 func (s *Snapshot) Chdir(dir string) error            { return os.ErrPermission }
 func (s *Snapshot) Getwd() (string, error)            { return s.fs.Getwd() }
 func (s *Snapshot) TempDir() string                   { return s.fs.TempDir() }
@@ -427,6 +386,11 @@ func (s *Snapshot) Open(name string) (absfs.File, error) {
 }
 func (s *Snapshot) Create(name string) (absfs.File, error) { return nil, os.ErrPermission }
 func (s *Snapshot) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
+	// Only allow read-only access for snapshots
+	access := flag & absfs.O_ACCESS
+	if access == os.O_RDONLY {
+		return s.Open(name)
+	}
 	return nil, os.ErrPermission
 }
 func (s *Snapshot) Mkdir(name string, perm os.FileMode) error      { return os.ErrPermission }
@@ -438,6 +402,90 @@ func (s *Snapshot) Chmod(name string, mode os.FileMode) error      { return os.E
 func (s *Snapshot) Chown(name string, uid, gid int) error          { return os.ErrPermission }
 func (s *Snapshot) Chtimes(name string, atime, mtime time.Time) error { return os.ErrPermission }
 func (s *Snapshot) Rename(oldpath, newpath string) error { return os.ErrPermission }
+
+// Sub returns an fs.FS corresponding to the subtree rooted at dir in the snapshot.
+func (s *Snapshot) Sub(dir string) (fs.FS, error) {
+	if s.released {
+		return nil, os.ErrClosed
+	}
+
+	cleanDir, filename := s.fs.cleanPath(dir)
+	p := path.Join(cleanDir, filename)
+	node, err := s.resolve(p)
+	if err != nil {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: err}
+	}
+
+	if !node.IsDir() {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: syscall.ENOTDIR}
+	}
+
+	// Return a subFS wrapper for the snapshot
+	return absfs.FilerToFS(&snapshotSubFS{snapshot: s, dir: path.Clean(p)}, dir)
+}
+
+// snapshotSubFS wraps a Snapshot and prefixes all paths with a directory
+type snapshotSubFS struct {
+	snapshot *Snapshot
+	dir      string
+}
+
+func (ss *snapshotSubFS) fullPath(name string) string {
+	clean := path.Clean("/" + name)
+	return path.Join(ss.dir, clean)
+}
+
+func (ss *snapshotSubFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
+	return ss.snapshot.OpenFile(ss.fullPath(name), flag, perm)
+}
+
+func (ss *snapshotSubFS) Mkdir(name string, perm os.FileMode) error {
+	return os.ErrPermission
+}
+
+func (ss *snapshotSubFS) Remove(name string) error {
+	return os.ErrPermission
+}
+
+func (ss *snapshotSubFS) Rename(oldpath, newpath string) error {
+	return os.ErrPermission
+}
+
+func (ss *snapshotSubFS) Stat(name string) (os.FileInfo, error) {
+	return ss.snapshot.Stat(ss.fullPath(name))
+}
+
+func (ss *snapshotSubFS) Chmod(name string, mode os.FileMode) error {
+	return os.ErrPermission
+}
+
+func (ss *snapshotSubFS) Chtimes(name string, atime time.Time, mtime time.Time) error {
+	return os.ErrPermission
+}
+
+func (ss *snapshotSubFS) Chown(name string, uid, gid int) error {
+	return os.ErrPermission
+}
+
+func (ss *snapshotSubFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return ss.snapshot.ReadDir(ss.fullPath(name))
+}
+
+func (ss *snapshotSubFS) ReadFile(name string) ([]byte, error) {
+	return ss.snapshot.ReadFile(ss.fullPath(name))
+}
+
+func (ss *snapshotSubFS) Sub(dir string) (fs.FS, error) {
+	fullDir := ss.fullPath(dir)
+	node, err := ss.snapshot.resolve(fullDir)
+	if err != nil {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: err}
+	}
+	if !node.IsDir() {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: syscall.ENOTDIR}
+	}
+	return absfs.FilerToFS(&snapshotSubFS{snapshot: ss.snapshot, dir: path.Clean(fullDir)}, dir)
+}
 
 // snapshotFile implements absfs.File for read-only access to files in a snapshot.
 type snapshotFile struct {
@@ -565,16 +613,25 @@ func (f *snapshotFile) Readdir(n int) ([]os.FileInfo, error) {
 	}
 
 	children := f.node.Children
-	if f.diroffset >= len(children) {
-		return nil, io.EOF
-	}
 
 	// Calculate how many entries to return
 	remaining := len(children) - f.diroffset
-	if n < 1 {
+
+	// When n <= 0, read all remaining entries and return nil error
+	// (even if there are no entries left)
+	if n <= 0 {
+		if remaining <= 0 {
+			return []os.FileInfo{}, nil
+		}
 		n = remaining
-	} else if n > remaining {
-		n = remaining
+	} else {
+		// When n > 0 and no entries remain, return io.EOF
+		if remaining <= 0 {
+			return nil, io.EOF
+		}
+		if n > remaining {
+			n = remaining
+		}
 	}
 
 	infos := make([]os.FileInfo, n)
@@ -590,6 +647,50 @@ func (f *snapshotFile) Readdir(n int) ([]os.FileInfo, error) {
 	return infos, nil
 }
 
+func (f *snapshotFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	if f.snapshot.released {
+		return nil, os.ErrClosed
+	}
+
+	if !f.node.IsDir() {
+		return nil, &os.PathError{Op: "readdir", Path: f.name, Err: syscall.ENOTDIR}
+	}
+
+	children := f.node.Children
+
+	// Calculate how many entries to return
+	remaining := len(children) - f.diroffset
+
+	// When n <= 0, read all remaining entries and return nil error
+	// (even if there are no entries left)
+	if n <= 0 {
+		if remaining <= 0 {
+			return []fs.DirEntry{}, nil
+		}
+		n = remaining
+	} else {
+		// When n > 0 and no entries remain, return io.EOF
+		if remaining <= 0 {
+			return nil, io.EOF
+		}
+		if n > remaining {
+			n = remaining
+		}
+	}
+
+	entries := make([]fs.DirEntry, n)
+	endOffset := f.diroffset + n
+	for i, entry := range children[f.diroffset:endOffset] {
+		node, err := f.snapshot.bucket.GetInode(entry.Ino)
+		if err != nil {
+			return nil, err
+		}
+		entries[i] = &dirEntry{name: entry.Name, node: node}
+	}
+	f.diroffset = endOffset
+	return entries, nil
+}
+
 func (f *snapshotFile) Readdirnames(n int) ([]string, error) {
 	if f.snapshot.released {
 		return nil, os.ErrClosed
@@ -600,18 +701,32 @@ func (f *snapshotFile) Readdirnames(n int) ([]string, error) {
 	}
 
 	children := f.node.Children
-	if f.diroffset >= len(children) {
-		return nil, io.EOF
-	}
 
-	if n < 1 || len(children[f.diroffset:]) < n {
-		n = len(children[f.diroffset:])
+	// Calculate how many entries to return
+	remaining := len(children) - f.diroffset
+
+	// When n <= 0, read all remaining entries and return nil error
+	// (even if there are no entries left)
+	if n <= 0 {
+		if remaining <= 0 {
+			return []string{}, nil
+		}
+		n = remaining
+	} else {
+		// When n > 0 and no entries remain, return io.EOF
+		if remaining <= 0 {
+			return nil, io.EOF
+		}
+		if n > remaining {
+			n = remaining
+		}
 	}
 
 	list := make([]string, n)
-	for i, entry := range children[f.diroffset : f.diroffset+n] {
+	endOffset := f.diroffset + n
+	for i, entry := range children[f.diroffset:endOffset] {
 		list[i] = entry.Name
 	}
-	f.diroffset += n
+	f.diroffset = endOffset
 	return list, nil
 }

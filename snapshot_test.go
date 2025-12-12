@@ -3,6 +3,8 @@ package boltfs
 import (
 	"os"
 	"testing"
+
+	"github.com/absfs/fstools"
 )
 
 // tempFile helper is defined in cache_test.go
@@ -337,9 +339,9 @@ func TestSnapshot_Walk(t *testing.T) {
 	}
 	defer snap.Release()
 
-	// Walk the snapshot
+	// Walk the snapshot using fstools.Walk
 	visited := make(map[string]bool)
-	err = snap.Walk("/a", func(path string, info os.FileInfo, err error) error {
+	err = fstools.Walk(snap, "/a", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}

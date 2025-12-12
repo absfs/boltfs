@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
-	walkpath "path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -359,6 +359,158 @@ func (fs *FileSystem) saveInode(node *iNode) (ino uint64, err error) {
 	return ino, err
 }
 
+// ReadDir reads the named directory and returns a list of directory entries sorted by filename.
+func (filesystem *FileSystem) ReadDir(name string) ([]fs.DirEntry, error) {
+	dir, filename := filesystem.cleanPath(name)
+	p := path.Join(dir, filename)
+	node, err := filesystem.resolve(p)
+	if err != nil {
+		return nil, &os.PathError{Op: "readdir", Path: name, Err: err}
+	}
+
+	if !node.IsDir() {
+		return nil, &os.PathError{Op: "readdir", Path: name, Err: syscall.ENOTDIR}
+	}
+
+	var entries []fs.DirEntry
+	for _, child := range node.Children {
+		childNode, err := filesystem.loadInode(child.Ino)
+		if err != nil {
+			return nil, &os.PathError{Op: "readdir", Path: name, Err: err}
+		}
+		entries = append(entries, &dirEntry{
+			name: child.Name,
+			node: childNode,
+		})
+	}
+
+	return entries, nil
+}
+
+// ReadFile reads the named file and returns its contents.
+func (fs *FileSystem) ReadFile(name string) ([]byte, error) {
+	dir, filename := fs.cleanPath(name)
+	p := path.Join(dir, filename)
+	node, err := fs.resolve(p)
+	if err != nil {
+		return nil, &os.PathError{Op: "readfile", Path: name, Err: err}
+	}
+
+	if node.IsDir() {
+		return nil, &os.PathError{Op: "readfile", Path: name, Err: syscall.EISDIR}
+	}
+
+	data, err := fs.loadData(node.Ino)
+	if err != nil {
+		return nil, &os.PathError{Op: "readfile", Path: name, Err: err}
+	}
+
+	return data, nil
+}
+
+// Sub returns an fs.FS corresponding to the subtree rooted at dir.
+func (fs *FileSystem) Sub(dir string) (fs.FS, error) {
+	cleanDir, filename := fs.cleanPath(dir)
+	p := path.Join(cleanDir, filename)
+	node, err := fs.resolve(p)
+	if err != nil {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: err}
+	}
+
+	if !node.IsDir() {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: errors.New("not a directory")}
+	}
+
+	// Pass "/" as root since subFS is already rooted at the subdirectory
+	return absfs.FilerToFS(&subFS{fs: fs, dir: path.Clean(p)}, "/")
+}
+
+// dirEntry implements fs.DirEntry
+type dirEntry struct {
+	name string
+	node *iNode
+}
+
+func (d *dirEntry) Name() string {
+	return d.name
+}
+
+func (d *dirEntry) IsDir() bool {
+	return d.node.IsDir()
+}
+
+func (d *dirEntry) Type() fs.FileMode {
+	return d.node.Mode.Type()
+}
+
+func (d *dirEntry) Info() (fs.FileInfo, error) {
+	return &inodeinfo{d.name, d.node}, nil
+}
+
+// subFS wraps a FileSystem and prefixes all paths with a directory
+type subFS struct {
+	fs  *FileSystem
+	dir string
+}
+
+func (s *subFS) fullPath(name string) string {
+	// Prevent escaping the subtree
+	clean := path.Clean("/" + name)
+	return path.Join(s.dir, clean)
+}
+
+func (s *subFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
+	return s.fs.OpenFile(s.fullPath(name), flag, perm)
+}
+
+func (s *subFS) Mkdir(name string, perm os.FileMode) error {
+	return s.fs.Mkdir(s.fullPath(name), perm)
+}
+
+func (s *subFS) Remove(name string) error {
+	return s.fs.Remove(s.fullPath(name))
+}
+
+func (s *subFS) Rename(oldpath, newpath string) error {
+	return s.fs.Rename(s.fullPath(oldpath), s.fullPath(newpath))
+}
+
+func (s *subFS) Stat(name string) (os.FileInfo, error) {
+	return s.fs.Stat(s.fullPath(name))
+}
+
+func (s *subFS) Chmod(name string, mode os.FileMode) error {
+	return s.fs.Chmod(s.fullPath(name), mode)
+}
+
+func (s *subFS) Chtimes(name string, atime time.Time, mtime time.Time) error {
+	return s.fs.Chtimes(s.fullPath(name), atime, mtime)
+}
+
+func (s *subFS) Chown(name string, uid, gid int) error {
+	return s.fs.Chown(s.fullPath(name), uid, gid)
+}
+
+func (s *subFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return s.fs.ReadDir(s.fullPath(name))
+}
+
+func (s *subFS) ReadFile(name string) ([]byte, error) {
+	return s.fs.ReadFile(s.fullPath(name))
+}
+
+func (s *subFS) Sub(dir string) (fs.FS, error) {
+	fullDir := s.fullPath(dir)
+	node, err := s.fs.resolve(fullDir)
+	if err != nil {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: err}
+	}
+	if !node.IsDir() {
+		return nil, &os.PathError{Op: "sub", Path: dir, Err: errors.New("not a directory")}
+	}
+	return absfs.FilerToFS(&subFS{fs: s.fs, dir: path.Clean(fullDir)}, dir)
+}
+
 var errInvalidIno = errors.New("invalid ino")
 
 // inoToPath converts an inode number to a path in the content filesystem.
@@ -487,15 +639,6 @@ func (fs *FileSystem) cleanPath(name string) (string, string) {
 	return dir, filename
 }
 
-// Separator returns "/" as the seperator for this FileSystem
-func (fs *FileSystem) Separator() uint8 {
-	return '/'
-}
-
-// ListSeparator returns ":" as the seperator for this fileSystem
-func (fs *FileSystem) ListSeparator() uint8 {
-	return ':'
-}
 
 // Rename renames (moves) oldpath to newpath. If newpath already exists and
 // is not a directory, Rename replaces it. OS-specific restrictions may apply
@@ -523,37 +666,62 @@ func (fs *FileSystem) Rename(oldpath, newpath string) error {
 		linkErr.Old = path.Join(srcDir, srcFilename)
 		return linkErr
 	}
+	if dstParent == nil {
+		linkErr.Err = os.ErrNotExist
+		linkErr.New = dstDir
+		return linkErr
+	}
 	if dstChild != nil {
 		linkErr.Err = os.ErrExist
 		linkErr.New = path.Join(dstDir, dstFilename)
 		return linkErr
 	}
 
+	// Check if source and destination are in the same directory
+	sameDir := srcParent.Ino == dstParent.Ino
+
+	// Add the new link
 	_, err := dstParent.Link(dstFilename, srcChild.Ino)
 	if err != nil {
 		linkErr.Err = err
 		return linkErr
 	}
 
-	_, err = fs.saveInode(dstParent)
-	if err != nil {
-		linkErr.Err = err
-		return linkErr
-	}
+	// If same directory, do both operations on the same inode
+	if sameDir {
+		_, err = dstParent.Unlink(srcFilename)
+		if err != nil {
+			linkErr.Err = err
+			return linkErr
+		}
+		_, err = fs.saveInode(dstParent)
+		if err != nil {
+			linkErr.Err = err
+			return linkErr
+		}
+	} else {
+		// Different directories - save each parent separately
+		_, err = fs.saveInode(dstParent)
+		if err != nil {
+			linkErr.Err = err
+			return linkErr
+		}
 
-	_, err = srcParent.Unlink(srcFilename)
-	if err != nil {
-		linkErr.Err = err
-		return linkErr
+		_, err = srcParent.Unlink(srcFilename)
+		if err != nil {
+			linkErr.Err = err
+			return linkErr
+		}
+
+		_, err = fs.saveInode(srcParent)
+		if err != nil {
+			linkErr.Err = err
+			return linkErr
+		}
 	}
 
 	if dstChild != nil {
 		dstChild.countDown()
-	}
-	_, err = fs.saveInode(srcParent)
-	if err != nil {
-		linkErr.Err = err
-		return linkErr
 	}
 
 	return nil
@@ -732,6 +900,28 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 			return file, pathErr
 		}
 
+		// Follow symlinks
+		if child.Mode&os.ModeSymlink != 0 {
+			var link string
+			err := fs.db.View(func(tx *bolt.Tx) error {
+				b, err := fs.openFsBucket(tx)
+				if err != nil {
+					return err
+				}
+				link = b.Readlink(child.Ino)
+				return nil
+			})
+			if err != nil {
+				pathErr.Err = err
+				return file, pathErr
+			}
+			if !path.IsAbs(link) {
+				// Relative symlinks are relative to the directory containing the symlink
+				link = path.Join(dir, link)
+			}
+			return fs.OpenFile(link, flag, perm)
+		}
+
 		if child.Mode.IsDir() {
 			if access != os.O_RDONLY || flag&os.O_TRUNC != 0 {
 				pathErr.Err = syscall.EISDIR
@@ -769,6 +959,17 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (absfs.F
 // Stat returns the FileInfo structure describing file. If there is an error,
 // it will be of type *os.PathError.
 func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
+	return fs.statWithDepth(name, 0)
+}
+
+// statWithDepth is the internal implementation of Stat with symlink cycle detection.
+// maxSymlinkDepth limits the number of symlinks that can be followed.
+const maxSymlinkDepth = 40
+
+func (fs *FileSystem) statWithDepth(name string, depth int) (os.FileInfo, error) {
+	if depth > maxSymlinkDepth {
+		return nil, &os.PathError{Op: "stat", Path: name, Err: syscall.ELOOP}
+	}
 
 	dir, filename := fs.cleanPath(name)
 	node, err := fs.resolve(path.Join(dir, filename))
@@ -801,10 +1002,11 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 	}
 
 	if !path.IsAbs(link) {
-		link = path.Join(name, link)
+		// Relative symlinks are relative to the directory containing the symlink
+		link = path.Join(path.Dir(name), link)
 	}
 
-	return fs.Stat(link)
+	return fs.statWithDepth(link, depth+1)
 }
 
 // Truncate changes the size of the file. It does not change the I/O offset. If
@@ -992,8 +1194,17 @@ func (fs *FileSystem) MkdirAll(name string, perm os.FileMode) error {
 	dir, filename := fs.cleanPath(name)
 	name = strings.TrimLeft(path.Join(dir, filename), "/")
 
+	// If name is empty (i.e., we're asked to create "/"), root already exists
+	if name == "" {
+		return nil
+	}
+
 	p := "/"
 	for _, part := range strings.Split(name, "/") {
+		// Skip empty parts (shouldn't happen after TrimLeft, but be safe)
+		if part == "" {
+			continue
+		}
 		p = path.Join(p, part)
 		err := fs.Mkdir(p, perm)
 
@@ -1019,7 +1230,7 @@ func (fs *FileSystem) Remove(name string) error {
 
 	pathErr := &os.PathError{Op: "remove", Path: name}
 	dir, filename := fs.cleanPath(name)
-	parent, child := fs.loadParentChild(dir, name)
+	parent, child := fs.loadParentChild(dir, filename)
 	if child == nil {
 		pathErr.Err = os.ErrNotExist
 		return pathErr
@@ -1052,119 +1263,6 @@ func (fs *FileSystem) Remove(name string) error {
 	return err
 }
 
-// Walk walks the file tree rooted at root, calling walkFn for each file or
-// directory in the tree, including root. All errors that arise visiting files
-// and directories are filtered by walkFn. The files are walked in lexical
-// order, which makes the output deterministic but means that for very large
-// directories Walk can be inefficient. Walk does not follow symbolic links.
-func (fs *FileSystem) Walk(root string, fn func(string, os.FileInfo, error) error) error {
-
-	dir, filename := fs.cleanPath(root)
-	parent, node := fs.loadParentChild(dir, filename)
-	root = path.Join(dir, filename)
-	if node == nil {
-		node = parent
-	}
-
-	if !node.IsDir() {
-		return fn(root, inodeinfo{root, node}, nil)
-	}
-	ino := node.Ino
-
-	var recurse func(string, uint64) error
-
-	return fs.db.View(func(tx *bolt.Tx) error {
-		b, err := fs.openFsBucket(tx)
-		if err != nil {
-			return err
-		}
-
-		recurse = func(p string, ino uint64) error {
-			node := new(iNode)
-			err := decodeNode(b.inodes, ino, node)
-
-			err = fn(p, inodeinfo{path.Base(p), node}, err)
-
-			if err != nil {
-				if err == walkpath.SkipDir {
-					return nil
-				}
-				return err
-			}
-			if node == nil {
-				return nil
-			}
-
-			for _, child := range node.Children {
-				err := recurse(path.Join(p, child.Name), child.Ino)
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		return recurse(root, ino)
-	})
-}
-
-// FastWalk walks the file tree rooted at root, calling fn for each file or
-// directory in the tree, including root. Unlike Walk, FastWalk does not
-// guarantee sorted output and only provides the file mode, trading completeness
-// for performance. This is ideal for operations that only need to check file
-// types without requiring full metadata. FastWalk does not follow symbolic links.
-//
-// The function signature is: fn(path string, mode os.FileMode) error
-// If fn returns an error, FastWalk stops and returns that error.
-// If fn returns filepath.SkipDir when invoked on a directory, FastWalk skips
-// that directory's contents.
-func (fs *FileSystem) FastWalk(root string, fn func(string, os.FileMode) error) error {
-	dir, filename := fs.cleanPath(root)
-	parent, node := fs.loadParentChild(dir, filename)
-	root = path.Join(dir, filename)
-	if node == nil {
-		node = parent
-	}
-
-	if !node.IsDir() {
-		return fn(root, node.Mode)
-	}
-	ino := node.Ino
-
-	var recurse func(string, uint64) error
-
-	return fs.db.View(func(tx *bolt.Tx) error {
-		b, err := fs.openFsBucketWithCache(tx)
-		if err != nil {
-			return err
-		}
-
-		recurse = func(p string, ino uint64) error {
-			node, err := b.GetInode(ino)
-			if err != nil {
-				return err
-			}
-
-			err = fn(p, node.Mode)
-			if err != nil {
-				if err == walkpath.SkipDir {
-					return nil
-				}
-				return err
-			}
-
-			// Traverse children without sorting (faster)
-			for _, child := range node.Children {
-				err := recurse(path.Join(p, child.Name), child.Ino)
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		return recurse(root, ino)
-	})
-}
-
 // RemoveAll removes path and any children it contains. It removes everything
 // it can but returns the first error it encounters. If the path does not exist,
 // RemoveAll returns nil (no error).
@@ -1180,16 +1278,36 @@ func (fs *FileSystem) RemoveAll(name string) error {
 		rootid = parent.Ino
 	}
 
-	err := fs.Walk(path.Join(dir, filename), func(p string, info os.FileInfo, err error) error {
+	// Collect all inodes iteratively using ReadDir (avoids stack overflow for deep trees)
+	// Use Lstat to not follow symlinks - when we hit a symlink, we just delete
+	// the symlink itself, we don't traverse into directories it points to
+	stack := []string{path.Join(dir, filename)}
+	for len(stack) > 0 {
+		// Pop from stack
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		info, err := fs.Lstat(p)
+		if err != nil {
+			return err
+		}
 		node, ok := info.Sys().(*iNode)
 		if !ok {
 			return errors.New("unable to cast os.FileInfo to *iNode")
 		}
 		inos = append(inos, node.Ino)
-		return nil
-	})
-	if err != nil {
-		return err
+
+		// Only traverse into actual directories, not symlinks to directories
+		if info.IsDir() && (info.Mode()&os.ModeSymlink == 0) {
+			entries, err := fs.ReadDir(p)
+			if err != nil {
+				return err
+			}
+			for _, entry := range entries {
+				childPath := path.Join(p, entry.Name())
+				stack = append(stack, childPath)
+			}
+		}
 	}
 
 	for i, j := 0, len(inos)-1; i < len(inos)/2; i, j = i+1, j-1 {
@@ -1199,6 +1317,7 @@ func (fs *FileSystem) RemoveAll(name string) error {
 	// Delete content from external content filesystem first
 	// We need to collect which inodes are regular files vs directories
 	var fileInos []uint64
+	var err error
 	err = fs.db.View(func(tx *bolt.Tx) error {
 		b, err := fs.openFsBucket(tx)
 		if err != nil {
@@ -1448,6 +1567,7 @@ func (fs *FileSystem) Symlink(source, destination string) error {
 	}
 
 	node := newInode(os.ModeSymlink | (fs.Umask() &^ os.ModeType))
+	node.countUp() // Increment link count since we're adding to parent directory
 
 	ino, err := fs.saveInode(node)
 	if err != nil {
